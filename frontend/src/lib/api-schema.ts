@@ -116,7 +116,10 @@ export interface components {
          *     every record carries:
          *     - `nct_ids`: the trials counted in the record (one trial for scatter points); when
          *       `meta.counts.method` is `server_counts` this is a sample and `trial_count` is the total,
-         *     - `citations`: the field values that put up to three of those trials there.
+         *     - `citations`: field values for up to three of those trials: why each is in this datum,
+         *       why it matches the filters, and its title,
+         *     - `source_query` (server_counts only): the ClinicalTrials.gov request whose `totalCount`
+         *       is exactly `trial_count`, so the number can be checked independently.
          *     Time series records may also carry `partial_period: true` (the year is not over) or
          *     `projected: true` (the year is in the future, so its trials have planned start dates).
          */
@@ -136,7 +139,7 @@ export interface components {
         };
         /**
          * Citation
-         * @description One API field value that puts a trial into a datum.
+         * @description One exact field value from a trial's ClinicalTrials.gov record.
          */
         Citation: {
             /**
@@ -156,6 +159,13 @@ export interface components {
              * @example MK-3475
              */
             value: string;
+            /**
+             * Kind
+             * @description grouping: puts the trial in this datum (its phase, start date...). filter: shows the trial matches the question's filters (its interventions, conditions...). title: the trial's brief title, for context.
+             * @default grouping
+             * @enum {string}
+             */
+            kind: "grouping" | "filter" | "title";
         };
         /**
          * Counts
@@ -272,6 +282,11 @@ export interface components {
             spec?: components["schemas"]["AnalysisSpec"] | null;
             counts?: components["schemas"]["Counts"] | null;
             /**
+             * Queries
+             * @description One API request per series that selects its trials.
+             */
+            queries?: components["schemas"]["SourceQuery"][];
+            /**
              * Truncated
              * @description True when only the first trials were fetched.
              * @default false
@@ -368,6 +383,11 @@ export interface components {
             trial_count: number;
             /** Nct Ids */
             nct_ids: string[];
+            /**
+             * Citations
+             * @description Field values for up to three of the trials.
+             */
+            citations: components["schemas"]["Citation"][];
         };
         /**
          * NetworkVisualization
@@ -401,6 +421,24 @@ export interface components {
             label: string;
             /** @description Added on top of the plan's shared filters. */
             filters: components["schemas"]["Filters"];
+        };
+        /**
+         * SourceQuery
+         * @description The ClinicalTrials.gov request behind one series, for checking `matched` independently.
+         */
+        SourceQuery: {
+            /**
+             * Series
+             * @description Comparison series label; null without a comparison.
+             */
+            series: string | null;
+            /** Url */
+            url: string;
+            /**
+             * Matched
+             * @description totalCount the API returned for this request.
+             */
+            matched: number;
         };
         /**
          * Status

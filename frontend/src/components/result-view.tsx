@@ -9,7 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { XYChart } from "@/components/xy-chart";
-import type { Datum, Evidence, Meta, VisualizeResponse } from "@/lib/api";
+import type { Citation, Datum, Evidence, Meta, VisualizeResponse } from "@/lib/api";
 
 const CT_GOV = "https://clinicaltrials.gov/study/";
 
@@ -115,15 +115,16 @@ function EvidencePanel({ evidence }: { evidence: Evidence }) {
                       <span className="font-medium">{label}</span>{" "}
                       <Badge variant="secondary">{total.toLocaleString()} trials</Badge>
                     </p>
-                    {Object.entries(byTrial).map(([id, cites]) => (
-                      <div key={id}>
-                        {link(id)}
-                        {cites?.map((c) => (
-                          <p key={c.field} className="break-all font-mono text-xs text-muted-foreground">
-                            {c.field} = &quot;{c.value}&quot;
-                          </p>
-                        ))}
-                      </div>
+                    {typeof datum.source_query === "string" && (
+                      <p className="text-xs">
+                        <a href={datum.source_query} target="_blank" rel="noopener noreferrer" className="text-primary underline-offset-2 hover:underline">
+                          Check this count on the ClinicalTrials.gov API
+                        </a>{" "}
+                        <span className="text-muted-foreground">(its totalCount is this number)</span>
+                      </p>
+                    )}
+                    {Object.entries(byTrial).map(([id, cites = []]) => (
+                      <TrialCitations key={id} link={link(id)} citations={cites} />
                     ))}
                     {ids.length > 0 && (
                       <p className="text-xs text-muted-foreground">
@@ -140,6 +141,36 @@ function EvidencePanel({ evidence }: { evidence: Evidence }) {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/** One cited trial: its title, the fields that place it in the datum, and (collapsed) the
+ * fields that show it matches the question's filters. */
+function TrialCitations({ link, citations }: { link: React.ReactNode; citations: Citation[] }) {
+  const title = citations.find((c) => c.kind === "title");
+  const grouping = citations.filter((c) => (c.kind ?? "grouping") === "grouping");
+  const filter = citations.filter((c) => c.kind === "filter");
+  const field = (c: Citation) => (
+    <p key={c.field} className="break-all font-mono text-xs text-muted-foreground">
+      {c.field.replace("protocolSection.", "")} = &quot;{c.value}&quot;
+    </p>
+  );
+  return (
+    <div className="space-y-1 rounded-md border p-2">
+      <div>
+        {link}
+        {title && <span className="text-muted-foreground"> · {title.value}</span>}
+      </div>
+      {grouping.map(field)}
+      {filter.length > 0 && (
+        <details>
+          <summary className="cursor-pointer text-xs text-muted-foreground">
+            Why it matches the filters ({filter.length} fields)
+          </summary>
+          {filter.map(field)}
+        </details>
+      )}
+    </div>
   );
 }
 
@@ -167,6 +198,14 @@ function MetaPanel({ meta }: { meta: Meta }) {
           </p>
         )}
         {meta.truncated && <Badge variant="destructive">Partial data: result was capped</Badge>}
+        {(meta.queries ?? []).map((q) => (
+          <p key={q.url} className="text-xs">
+            <a href={q.url} target="_blank" rel="noopener noreferrer" className="text-primary underline-offset-2 hover:underline">
+              {q.series ? `${q.series}: ` : ""}API query for these trials
+            </a>{" "}
+            <span className="text-muted-foreground">({q.matched.toLocaleString()} matched)</span>
+          </p>
+        ))}
         <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
           {notes.map((n) => (
             <li key={n}>{n}</li>

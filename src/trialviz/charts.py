@@ -89,9 +89,13 @@ class Bucket:
 
     evidence: dict[Entry, list[Citation]] = field(default_factory=dict)
     total: int | None = None
+    query: str | None = None
 
     def add(self, entry: Entry, evidence: Iterable[Citation]) -> None:
-        self.evidence.setdefault(entry, list(evidence))
+        if entry not in self.evidence:
+            # A field can back both the grouping and a filter (e.g. start date); cite it once.
+            unique = {c.field: c for c in reversed(list(evidence))}
+            self.evidence[entry] = list(reversed(unique.values()))
 
     @property
     def nct_ids(self) -> list[str]:
@@ -107,7 +111,7 @@ class Bucket:
             "trial_count": self.trial_count,
             "nct_ids": self.nct_ids,
             "citations": [c.model_dump() for entry in cited for c in self.evidence[entry]],
-        }
+        } | ({"source_query": self.query} if self.query else {})
 
 
 def build(spec: AnalysisSpec, data: Dataset) -> Built:
@@ -162,7 +166,10 @@ def _buckets(
         for (series, combo), count in data.counts.items():
             if len(spec.dimensions) > 1:
                 series = str(label(spec.dimensions[1], combo[1]))
-            buckets[(key(combo[0]), series)] = Bucket(dict(count.evidence), total=count.total)
+            bucket = Bucket(total=count.total, query=count.query)
+            for entry, evidence in count.evidence.items():
+                bucket.add(entry, evidence)
+            buckets[(key(combo[0]), series)] = bucket
         return buckets, set()
 
     dimension = spec.dimensions[0]
@@ -174,7 +181,7 @@ def _buckets(
             missing.add(entry)
         for fact, (series, series_evidence) in pairs:
             buckets.setdefault((key(fact.value), series), Bucket()).add(
-                entry, fact.evidence + series_evidence
+                entry, [*fact.evidence, *series_evidence, *trial.context]
             )
     return buckets, missing
 
@@ -332,22 +339,22 @@ def _nice_step(raw: float) -> int:
 
 def _histogram(spec: AnalysisSpec, data: Dataset) -> Built:
     dimension = spec.dimensions[0]
-    values: list[tuple[Entry, Fact]] = []
+    values: list[tuple[Entry, Fact, list[Citation]]] = []
     missing: set[Entry] = set()
     for trial in data.trials:
         entry = (trial.series, trial.nct_id)
         if facts := trial.facts[dimension]:
-            values.append((entry, facts[0]))
+            values.append((entry, facts[0], trial.context))
         else:
             missing.add(entry)
 
-    ordered = sorted(int(fact.value) for _, fact in values) or [0]
+    ordered = sorted(int(fact.value) for _, fact, _ in values) or [0]
     p95 = ordered[int(0.95 * (len(ordered) - 1))]
     step = _nice_step(max(p95, 1) / HISTOGRAM_BINS)
     bins = math.ceil((p95 + 1) / step)
     buckets = [Bucket() for _ in range(bins + 1)]
-    for entry, fact in values:
-        buckets[min(int(fact.value) // step, bins)].add(entry, fact.evidence)
+    for entry, fact, context in values:
+        buckets[min(int(fact.value) // step, bins)].add(entry, [*fact.evidence, *context])
 
     rows = [
         {"bin_start": i * step, "bin_end": (i + 1) * step} | bucket.support()
@@ -359,7 +366,7 @@ def _histogram(spec: AnalysisSpec, data: Dataset) -> Built:
         notes.append(
             f"The last bin collects all {len(overflow):,} trials at or above {bins * step:,}."
         )
-    plotted = {entry for entry, _ in values}
+    plotted = {entry for entry, _, _ in values}
     count, excluded = _accounting(data, plotted, missing, "")
     x = _channel(dimension)
     return Built(
@@ -393,7 +400,7 @@ def _scatter(spec: AnalysisSpec, data: Dataset) -> Built:
             continue
         if len(rows) >= MAX_POINTS:
             continue
-        evidence = list(xs[0].evidence + ys[0].evidence)
+        evidence = [*xs[0].evidence, *ys[0].evidence, *trial.context]
         rows.append(
             {"nct_id": trial.nct_id, x_dim.value: xs[0].value, y_dim.value: ys[0].value}
             | {"nct_ids": [trial.nct_id], "citations": [c.model_dump() for c in evidence]}
@@ -422,7 +429,7 @@ def _network(spec: AnalysisSpec, data: Dataset) -> Built:
 
     edges: dict[tuple[str, str], Bucket] = {}
     nodes: dict[str, tuple[Dimension, str]] = {}
-    node_trials: dict[str, set[Entry]] = {}
+    node_trials: dict[str, Bucket] = {}
     missing: set[Entry] = set()
     for trial in data.trials:
         entry = (trial.series, trial.nct_id)
@@ -439,12 +446,16 @@ def _network(spec: AnalysisSpec, data: Dataset) -> Built:
             missing.add(entry)
         for (a_dim, a), (b_dim, b) in pairs:
             a_id, b_id = node_id(a_dim, a), node_id(b_dim, b)
-            edges.setdefault((a_id, b_id), Bucket()).add(entry, a.evidence + b.evidence)
+            edges.setdefault((a_id, b_id), Bucket()).add(
+                entry, [*a.evidence, *b.evidence, *trial.context]
+            )
             for dim, fact, nid in ((a_dim, a, a_id), (b_dim, b, b_id)):
                 nodes[nid] = (dim, str(fact.value))
-                node_trials.setdefault(nid, set()).add(entry)
+                node_trials.setdefault(nid, Bucket()).add(entry, [*fact.evidence, *trial.context])
 
-    kept_nodes = set(_top({n: len(t) for n, t in node_trials.items()}, spec.top_n or MAX_NODES))
+    kept_nodes = set(
+        _top({n: b.trial_count for n, b in node_trials.items()}, spec.top_n or MAX_NODES)
+    )
     kept_edges = _top(
         {key: len(b.evidence) for key, b in edges.items() if set(key) <= kept_nodes}, MAX_EDGES
     )
@@ -454,13 +465,9 @@ def _network(spec: AnalysisSpec, data: Dataset) -> Built:
     network = NetworkData(
         nodes=[
             NetworkNode(
-                id=nid,
-                label=nodes[nid][1],
-                group=nodes[nid][0],
-                trial_count=len({n for _, n in node_trials[nid]}),
-                nct_ids=sorted({n for _, n in node_trials[nid]}, reverse=True),
+                id=nid, label=nodes[nid][1], group=nodes[nid][0], **node_trials[nid].support()
             )
-            for nid in sorted(shown, key=lambda n: -len(node_trials[n]))
+            for nid in sorted(shown, key=lambda n: -node_trials[n].trial_count)
         ],
         edges=[NetworkEdge(source=a, target=b, **edges[(a, b)].support()) for a, b in kept_edges],
     )

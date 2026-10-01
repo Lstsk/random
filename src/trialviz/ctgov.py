@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx2
 
@@ -94,6 +95,12 @@ class CTGovClient:
         self._sleep = sleep
         self._lock = threading.Lock()
         self._last_request = 0.0
+
+    @staticmethod
+    def count_url(filters: Filters, extra: Sequence[str] = ()) -> str:
+        """A browsable URL for the same count request `count` makes."""
+        query = urlencode(filters_to_params(filters, extra) | _COUNT_ONLY)
+        return f"{BASE_URL}/studies?{query}"
 
     def count(self, filters: Filters, extra: Sequence[str] = ()) -> int:
         body = self._get("/studies", filters_to_params(filters, extra) | _COUNT_ONLY)

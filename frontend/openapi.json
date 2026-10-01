@@ -233,7 +233,7 @@
           "data"
         ],
         "title": "ChartVisualization",
-        "description": "Bar, grouped bar, time series, histogram or scatter.\n\n`data` is a flat list of records; `encoding` names the keys to plot. Besides those keys,\nevery record carries:\n- `nct_ids`: the trials counted in the record (one trial for scatter points); when\n  `meta.counts.method` is `server_counts` this is a sample and `trial_count` is the total,\n- `citations`: the field values that put up to three of those trials there.\nTime series records may also carry `partial_period: true` (the year is not over) or\n`projected: true` (the year is in the future, so its trials have planned start dates)."
+        "description": "Bar, grouped bar, time series, histogram or scatter.\n\n`data` is a flat list of records; `encoding` names the keys to plot. Besides those keys,\nevery record carries:\n- `nct_ids`: the trials counted in the record (one trial for scatter points); when\n  `meta.counts.method` is `server_counts` this is a sample and `trial_count` is the total,\n- `citations`: field values for up to three of those trials: why each is in this datum,\n  why it matches the filters, and its title,\n- `source_query` (server_counts only): the ClinicalTrials.gov request whose `totalCount`\n  is exactly `trial_count`, so the number can be checked independently.\nTime series records may also carry `partial_period: true` (the year is not over) or\n`projected: true` (the year is in the future, so its trials have planned start dates)."
       },
       "Citation": {
         "properties": {
@@ -259,6 +259,17 @@
             "examples": [
               "MK-3475"
             ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "grouping",
+              "filter",
+              "title"
+            ],
+            "title": "Kind",
+            "description": "grouping: puts the trial in this datum (its phase, start date...). filter: shows the trial matches the question's filters (its interventions, conditions...). title: the trial's brief title, for context.",
+            "default": "grouping"
           }
         },
         "type": "object",
@@ -268,7 +279,7 @@
           "value"
         ],
         "title": "Citation",
-        "description": "One API field value that puts a trial into a datum."
+        "description": "One exact field value from a trial's ClinicalTrials.gov record."
       },
       "Counts": {
         "properties": {
@@ -506,6 +517,14 @@
               }
             ]
           },
+          "queries": {
+            "items": {
+              "$ref": "#/components/schemas/SourceQuery"
+            },
+            "type": "array",
+            "title": "Queries",
+            "description": "One API request per series that selects its trials."
+          },
           "truncated": {
             "type": "boolean",
             "title": "Truncated",
@@ -661,6 +680,14 @@
             },
             "type": "array",
             "title": "Nct Ids"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "type": "array",
+            "title": "Citations",
+            "description": "Field values for up to three of the trials."
           }
         },
         "type": "object",
@@ -669,7 +696,8 @@
           "label",
           "group",
           "trial_count",
-          "nct_ids"
+          "nct_ids",
+          "citations"
         ],
         "title": "NetworkNode"
       },
@@ -733,6 +761,39 @@
         ],
         "title": "Series",
         "description": "One cohort in a comparison, e.g. the trials for one of two drugs."
+      },
+      "SourceQuery": {
+        "properties": {
+          "series": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Series",
+            "description": "Comparison series label; null without a comparison."
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "matched": {
+            "type": "integer",
+            "title": "Matched",
+            "description": "totalCount the API returned for this request."
+          }
+        },
+        "type": "object",
+        "required": [
+          "series",
+          "url",
+          "matched"
+        ],
+        "title": "SourceQuery",
+        "description": "The ClinicalTrials.gov request behind one series, for checking `matched` independently."
       },
       "Status": {
         "type": "string",

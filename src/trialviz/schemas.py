@@ -254,7 +254,7 @@ class CannotAnswer(BaseModel):
 
 
 class Citation(BaseModel):
-    """One API field value that puts a trial into a datum."""
+    """One exact field value from a trial's ClinicalTrials.gov record."""
 
     nct_id: str = Field(examples=["NCT01876511"])
     field: str = Field(
@@ -262,6 +262,12 @@ class Citation(BaseModel):
         examples=["protocolSection.armsInterventionsModule.interventions[0].name"],
     )
     value: str = Field(description="Exact value at that path.", examples=["MK-3475"])
+    kind: Literal["grouping", "filter", "title"] = Field(
+        "grouping",
+        description="grouping: puts the trial in this datum (its phase, start date...). "
+        "filter: shows the trial matches the question's filters (its interventions, "
+        "conditions...). title: the trial's brief title, for context.",
+    )
 
 
 class Channel(BaseModel):
@@ -289,7 +295,10 @@ class ChartVisualization(BaseModel):
     every record carries:
     - `nct_ids`: the trials counted in the record (one trial for scatter points); when
       `meta.counts.method` is `server_counts` this is a sample and `trial_count` is the total,
-    - `citations`: the field values that put up to three of those trials there.
+    - `citations`: field values for up to three of those trials: why each is in this datum,
+      why it matches the filters, and its title,
+    - `source_query` (server_counts only): the ClinicalTrials.gov request whose `totalCount`
+      is exactly `trial_count`, so the number can be checked independently.
     Time series records may also carry `partial_period: true` (the year is not over) or
     `projected: true` (the year is in the future, so its trials have planned start dates).
     """
@@ -306,6 +315,7 @@ class NetworkNode(BaseModel):
     group: Dimension = Field(description="Entity kind; colour nodes by this.")
     trial_count: int = Field(description="Distinct trials touching this node; size by this.")
     nct_ids: list[str]
+    citations: list[Citation] = Field(description="Field values for up to three of the trials.")
 
 
 class NetworkEdge(BaseModel):
@@ -366,11 +376,22 @@ class Counts(BaseModel):
     excluded: list[Exclusion] = Field(default_factory=list)
 
 
+class SourceQuery(BaseModel):
+    """The ClinicalTrials.gov request behind one series, for checking `matched` independently."""
+
+    series: str | None = Field(description="Comparison series label; null without a comparison.")
+    url: str
+    matched: int = Field(description="totalCount the API returned for this request.")
+
+
 class Meta(BaseModel):
     source: str = "ClinicalTrials.gov API v2"
     data_timestamp: str | None = Field(None, description="When ClinicalTrials.gov last refreshed.")
     spec: AnalysisSpec | None = Field(None, description="The plan that was executed.")
     counts: Counts | None = None
+    queries: list[SourceQuery] = Field(
+        default_factory=list, description="One API request per series that selects its trials."
+    )
     truncated: bool = Field(False, description="True when only the first trials were fetched.")
     notes: list[str] = Field(
         default_factory=list,

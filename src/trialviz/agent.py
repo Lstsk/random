@@ -171,6 +171,7 @@ def visualize(
     data, built = output.data, output.built
     meta.spec = output.spec
     meta.data_timestamp = client.data_timestamp()
+    meta.queries = data.queries
     meta.truncated = data.truncated
     meta.notes = data.notes + built.notes
     meta.counts = Counts(

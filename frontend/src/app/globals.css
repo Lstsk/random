@@ -140,3 +140,8 @@
     @apply font-sans;
   }
 }
+/* Recharts focuses the chart on click; the focus box adds noise without helping keyboard users here. */
+.recharts-wrapper:focus,
+.recharts-surface:focus {
+  outline: none;
+}

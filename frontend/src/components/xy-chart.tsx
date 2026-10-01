@@ -83,19 +83,78 @@ export function XYChart({ viz, onSelect }: { viz: ChartVisualization; onSelect: 
   }
 
   if (viz.type === "time_series") {
+    // Years that are not over (partial_period) or not started (projected) are drawn dashed so
+    // their lower counts don't read as a decline. The dashed line starts at the last full year.
+    const open = (row: Row) => Object.values(row.records).some((d) => d.partial_period || d.projected);
+    const lines = rows.map((row, i) => {
+      const line: Record<string, unknown> = { ...row };
+      for (const k of keys) {
+        if (open(row)) {
+          line[`${k}_open`] = row[k];
+          delete line[k];
+        } else if (rows[i + 1] && open(rows[i + 1])) {
+          line[`${k}_open`] = row[k];
+        }
+      }
+      return line;
+    });
+    const yearLabel = (_: unknown, payload: readonly { payload?: Row }[]) => {
+      const row = payload?.[0]?.payload;
+      if (!row) return "";
+      const d = Object.values(row.records)[0];
+      const suffix = d?.projected ? " (planned starts)" : d?.partial_period ? " (year not over)" : "";
+      return `${row[x.field]}${suffix}`;
+    };
+    const lineConfig: ChartConfig = {
+      ...config,
+      ...Object.fromEntries(keys.map((k) => [`${k}_open`, config[k]])),
+    };
     return (
-      <ChartContainer config={config} className="h-[360px] w-full">
-        <LineChart data={rows} margin={{ left: 8, right: 16, top: 8 }} onClick={select((d) => String(d[x.field]))}>
-          <CartesianGrid vertical={false} />
-          <XAxis dataKey={x.field} tickLine={false} />
-          <YAxis allowDecimals={false} width={48} />
-          <ChartTooltip content={<ChartTooltipContent />} />
-          {legend}
-          {keys.map((k) => (
-            <Line key={k} dataKey={k} stroke={`var(--color-${k})`} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} isAnimationActive={false} />
-          ))}
-        </LineChart>
-      </ChartContainer>
+      <div className="space-y-2">
+        <ChartContainer config={lineConfig} className="h-[360px] w-full">
+          <LineChart data={lines} margin={{ left: 8, right: 16, top: 8 }} onClick={select((d) => String(d[x.field]))}>
+            <CartesianGrid vertical={false} />
+            <XAxis dataKey={x.field} tickLine={false} />
+            <YAxis allowDecimals={false} width={48} />
+            <ChartTooltip
+              content={({ active, label, payload }) => (
+                // The solid and dashed lines meet at one year; list each series once.
+                <ChartTooltipContent
+                  active={active}
+                  label={label}
+                  payload={payload?.filter(
+                    (item, i, all) =>
+                      all.findIndex((o) => String(o.dataKey).replace("_open", "") === String(item.dataKey).replace("_open", "")) === i,
+                  )}
+                  labelFormatter={yearLabel}
+                />
+              )}
+            />
+            {legend}
+            {keys.map((k) => (
+              <Line key={k} dataKey={k} stroke={`var(--color-${k})`} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} isAnimationActive={false} />
+            ))}
+            {keys.map((k) => (
+              <Line
+                key={`${k}_open`}
+                dataKey={`${k}_open`}
+                stroke={`var(--color-${k})`}
+                strokeWidth={2}
+                strokeDasharray="5 4"
+                dot={{ r: 3, fillOpacity: 0.3 }}
+                activeDot={{ r: 5 }}
+                legendType="none"
+                isAnimationActive={false}
+              />
+            ))}
+          </LineChart>
+        </ChartContainer>
+        {rows.some(open) && (
+          <p className="text-xs text-muted-foreground">
+            Dashed: the current year (not over yet) and future years (planned start dates).
+          </p>
+        )}
+      </div>
     );
   }
 

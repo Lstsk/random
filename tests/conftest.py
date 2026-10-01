@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 
-from trialviz.ctgov import SearchResult
+from trialviz.ctgov import CTGovClient, SearchResult
 from trialviz.schemas import Dimension, Filters
 
 
@@ -22,6 +22,7 @@ def study(
 ) -> dict[str, Any]:
     """A study record shaped like the ClinicalTrials.gov v2 API returns it."""
     status_module: dict[str, Any] = {"overallStatus": status}
+    identification = {"nctId": nct_id, "briefTitle": f"Study {nct_id}"}
     if start:
         status_module["startDateStruct"] = {"date": start, "type": start_type}
     if completion:
@@ -33,7 +34,7 @@ def study(
         design["enrollmentInfo"] = {"count": enrollment}
     return {
         "protocolSection": {
-            "identificationModule": {"nctId": nct_id},
+            "identificationModule": identification,
             "statusModule": status_module,
             "sponsorCollaboratorsModule": {
                 "leadSponsor": {"name": sponsor, "class": sponsor_class}
@@ -50,6 +51,8 @@ def study(
 
 class FakeClient:
     """Stands in for CTGovClient; returns canned studies, keyed by drug name when comparing."""
+
+    count_url = staticmethod(CTGovClient.count_url)
 
     def __init__(self, studies: list[dict] | dict[str, list[dict]]) -> None:
         self.studies = studies

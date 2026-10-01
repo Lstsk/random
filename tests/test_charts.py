@@ -5,7 +5,7 @@ from conftest import FakeClient, study
 
 from trialviz import analysis, charts
 from trialviz.analysis import NoTrialsError
-from trialviz.ctgov import SearchResult
+from trialviz.ctgov import CTGovClient, SearchResult
 from trialviz.schemas import AnalysisSpec
 
 STUDIES = [
@@ -72,7 +72,14 @@ def test_bar_counts_each_listed_phase_in_phase_order(labeler):
             "nct_id": "NCT00000001",
             "field": "protocolSection.designModule.phases[0]",
             "value": "PHASE1",
-        }
+            "kind": "grouping",
+        },
+        {
+            "nct_id": "NCT00000001",
+            "field": "protocolSection.identificationModule.briefTitle",
+            "value": "Study NCT00000001",
+            "kind": "title",
+        },
     ]
     assert built.visualization.encoding.x.sort[:2] == ["Early Phase 1", "Phase 1"]
     assert [e.reason for e in built.excluded] == ["no value for a plotted field"]
@@ -160,8 +167,8 @@ def test_sponsor_drug_network_is_bipartite(labeler):
         if e.source == "lead_sponsor:Sponsor 1" and e.target == "drug:drug a"
     )
     assert edge.nct_ids == ["NCT00000002", "NCT00000001"]
-    fields = {c.field.rsplit(".", 1)[-1] for c in edge.citations}
-    assert fields == {"name"}
+    grouping = {c.field.rsplit(".", 1)[-1] for c in edge.citations if c.kind == "grouping"}
+    assert grouping == {"name"}
     assert {n.group for n in network.nodes} == {"lead_sponsor", "drug"}
 
 
@@ -172,6 +179,8 @@ def test_no_matching_trials_raises(labeler):
 
 class CountingClient:
     """Answers per-value count queries like the API does, from a table of totals."""
+
+    count_url = staticmethod(CTGovClient.count_url)
 
     def __init__(self, total: int, per_clause: dict[str, int]) -> None:
         self.total, self.per_clause = total, per_clause
@@ -215,6 +224,7 @@ def test_large_result_sets_are_counted_on_the_server(labeler):
     assert rows["Phase 2"]["trial_count"] == 39_904
     assert rows["Phase 2"]["nct_ids"] == ["NCT92", "NCT91", "NCT90"]
     assert rows["Phase 2"]["citations"][0]["field"] == "protocolSection.designModule.phases[0]"
+    assert "AREA%5BPhase%5DPHASE2" in rows["Phase 2"]["source_query"]
     assert built.plotted == 123_726 - 26_250
     assert [(e.reason, e.count) for e in built.excluded] == [
         ("no value for a plotted field", 26_250)
@@ -225,3 +235,58 @@ def test_small_result_sets_are_still_fetched(labeler):
     plan = AnalysisSpec(filters={"condition": "x"}, dimensions=["phase"], chart="bar", title="T")
     data = analysis.load(plan, FakeClient(STUDIES), labeler)
     assert data.method == "fetch"
+
+
+def resolve(record: dict, path: str):
+    """Follow a citation path such as a.b.list[2].name through a study record."""
+    node = record
+    for part in path.split("."):
+        name, _, index = part.partition("[")
+        node = node[name]
+        if index:
+            node = node[int(index.rstrip("]"))]
+    return node
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"dimensions": ["phase"], "chart": "bar"},
+        {"dimensions": ["start_year"], "chart": "time_series"},
+        {"dimensions": ["enrollment"], "chart": "histogram"},
+        {"dimensions": ["duration_months", "enrollment"], "chart": "scatter"},
+        {"dimensions": ["lead_sponsor", "drug"], "chart": "network"},
+    ],
+)
+def test_every_citation_reads_back_from_the_source_record(labeler, spec):
+    records = {s["protocolSection"]["identificationModule"]["nctId"]: s for s in STUDIES}
+    filters = {"drug_name": "Drug A", "country": "united states", "start_year": 2019}
+    plan = AnalysisSpec.model_validate({"title": "T", "filters": filters} | spec)
+    viz = charts.build(plan, analysis.load(plan, FakeClient(STUDIES), labeler)).visualization
+    if viz.type == "network":
+        data = [n.model_dump() for n in viz.data.nodes] + [e.model_dump() for e in viz.data.edges]
+    else:
+        data = viz.data
+    citations = [c for d in data for c in d["citations"]]
+    assert citations
+    for c in citations:
+        assert str(resolve(records[c["nct_id"]], c["field"])) == c["value"], c
+
+
+def test_citations_show_why_a_trial_matches_the_filters(labeler):
+    record = study(
+        "NCT5",
+        start="2016-02",
+        interventions=[("DRUG", "MK-3475")],
+        countries=["Spain", "United States"],
+    )
+    record["protocolSection"]["armsInterventionsModule"]["interventions"][0]["otherNames"] = [
+        "Keytruda"
+    ]
+    filters = {"drug_name": "pembrolizumab", "country": "United States"}
+    built = run(labeler, [record], filters=filters, dimensions=["start_year"], chart="time_series")
+    cited = {(c["kind"], c["value"]) for c in built.visualization.data[0]["citations"]}
+    assert ("grouping", "2016-02") in cited
+    assert ("filter", "MK-3475") in cited and ("filter", "Keytruda") in cited
+    assert ("filter", "United States") in cited and ("filter", "Spain") not in cited
+    assert ("title", "Study NCT5") in cited
