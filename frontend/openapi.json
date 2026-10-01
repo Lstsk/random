@@ -1,0 +1,1022 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Clinical trial visualizer",
+    "description": "Answers questions about clinical trials with a visualization spec built from ClinicalTrials.gov data. Every datum lists the trials behind it and cites their fields.",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/visualize": {
+      "post": {
+        "summary": "Visualize",
+        "description": "Plan an analysis for the question, run it, and return the chart spec.\n\nTakes 10-40 s: the planner model runs first, then trials are fetched at about one page\nof 1,000 per second to stay inside ClinicalTrials.gov's rate limit.",
+        "operationId": "visualize_visualize_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VisualizeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VisualizeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Health Health Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AnalysisSpec": {
+        "properties": {
+          "filters": {
+            "$ref": "#/components/schemas/Filters",
+            "description": "Shared by every series. Must include every filter from the request."
+          },
+          "compare": {
+            "items": {
+              "$ref": "#/components/schemas/Series"
+            },
+            "type": "array",
+            "maxItems": 4,
+            "title": "Compare",
+            "description": "Two to four cohorts to compare side by side; empty for no comparison."
+          },
+          "dimensions": {
+            "items": {
+              "$ref": "#/components/schemas/Dimension"
+            },
+            "type": "array",
+            "maxItems": 2,
+            "minItems": 1,
+            "title": "Dimensions",
+            "description": "Temporal: start_year. Quantitative: duration_months, enrollment. Entities: condition, country, drug, lead_sponsor. All others are categorical."
+          },
+          "chart": {
+            "$ref": "#/components/schemas/ChartType",
+            "description": "Must fit the dimensions. bar: one categorical dimension. grouped_bar: one categorical dimension plus a comparison or a second categorical dimension. time_series: start_year first, optionally a categorical dimension or a comparison as the series. histogram: one quantitative dimension. scatter: two different quantitative dimensions, one point per trial. network: one entity dimension (co-occurrence within a trial, e.g. drug-drug) or two different entity dimensions (bipartite, e.g. sponsor-drug)."
+          },
+          "top_n": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 50.0,
+                "minimum": 3.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top N",
+            "description": "Keep only the N largest categories, or the N best-connected network nodes."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 120,
+            "title": "Title",
+            "description": "What the chart shows. Do not state counts or results."
+          },
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 6,
+            "title": "Assumptions",
+            "description": "Interpretation choices a reader should know, e.g. 'start year, not completion year'."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dimensions",
+          "chart",
+          "title"
+        ],
+        "title": "AnalysisSpec",
+        "description": "The agent's plan for answering a question. Code executes it; the model supplies no data."
+      },
+      "Channel": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "title": "Field"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "nominal",
+              "ordinal",
+              "quantitative",
+              "temporal"
+            ],
+            "title": "Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "sort": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sort",
+            "description": "Explicit category order for ordinal fields, e.g. phases."
+          }
+        },
+        "type": "object",
+        "required": [
+          "field",
+          "type",
+          "title"
+        ],
+        "title": "Channel",
+        "description": "Maps a data field to a visual channel, in the style of Vega-Lite."
+      },
+      "ChartType": {
+        "type": "string",
+        "enum": [
+          "bar",
+          "grouped_bar",
+          "time_series",
+          "histogram",
+          "scatter",
+          "network"
+        ],
+        "title": "ChartType"
+      },
+      "ChartVisualization": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "bar",
+              "grouped_bar",
+              "time_series",
+              "histogram",
+              "scatter"
+            ],
+            "title": "Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "encoding": {
+            "$ref": "#/components/schemas/XYEncoding"
+          },
+          "data": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Data"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "encoding",
+          "data"
+        ],
+        "title": "ChartVisualization",
+        "description": "Bar, grouped bar, time series, histogram or scatter.\n\n`data` is a flat list of records; `encoding` names the keys to plot. Besides those keys,\nevery record carries:\n- `nct_ids`: the trials counted in the record (one trial for scatter points); when\n  `meta.counts.method` is `server_counts` this is a sample and `trial_count` is the total,\n- `citations`: the field values that put up to three of those trials there.\nTime series records may also carry `partial_period: true` (the year is not over) or\n`projected: true` (the year is in the future, so its trials have planned start dates)."
+      },
+      "Citation": {
+        "properties": {
+          "nct_id": {
+            "type": "string",
+            "title": "Nct Id",
+            "examples": [
+              "NCT01876511"
+            ]
+          },
+          "field": {
+            "type": "string",
+            "title": "Field",
+            "description": "Path in the ClinicalTrials.gov study record.",
+            "examples": [
+              "protocolSection.armsInterventionsModule.interventions[0].name"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "title": "Value",
+            "description": "Exact value at that path.",
+            "examples": [
+              "MK-3475"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "nct_id",
+          "field",
+          "value"
+        ],
+        "title": "Citation",
+        "description": "One API field value that puts a trial into a datum."
+      },
+      "Counts": {
+        "properties": {
+          "method": {
+            "type": "string",
+            "enum": [
+              "fetched_records",
+              "server_counts"
+            ],
+            "title": "Method",
+            "default": "fetched_records"
+          },
+          "matched": {
+            "type": "integer",
+            "title": "Matched",
+            "description": "Trials the API matched for the filters."
+          },
+          "fetched": {
+            "type": "integer",
+            "title": "Fetched",
+            "description": "Trials downloaded; lower than matched when truncated."
+          },
+          "plotted": {
+            "type": "integer",
+            "title": "Plotted",
+            "description": "Trials that appear in the visualization."
+          },
+          "excluded": {
+            "items": {
+              "$ref": "#/components/schemas/Exclusion"
+            },
+            "type": "array",
+            "title": "Excluded"
+          }
+        },
+        "type": "object",
+        "required": [
+          "matched",
+          "fetched",
+          "plotted"
+        ],
+        "title": "Counts",
+        "description": "How the numbers were obtained, and what was left out.\n\n- fetched_records: trials were downloaded and counted here; fetched = plotted +\n  sum(excluded counts). With a comparison, a trial in two series counts once in each.\n- server_counts: ClinicalTrials.gov counted each value directly (used for large result sets\n  or when it needs fewer requests); counts cover every matching trial, and each datum's\n  nct_ids are a sample."
+      },
+      "Dimension": {
+        "type": "string",
+        "enum": [
+          "start_year",
+          "phase",
+          "status",
+          "sponsor_class",
+          "lead_sponsor",
+          "intervention_type",
+          "drug",
+          "condition",
+          "country",
+          "enrollment",
+          "duration_months"
+        ],
+        "title": "Dimension",
+        "description": "Trial attributes the analysis can group, bin or plot by."
+      },
+      "Exclusion": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reason",
+          "count"
+        ],
+        "title": "Exclusion"
+      },
+      "Filters": {
+        "properties": {
+          "drug_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drug Name",
+            "description": "Drug or biologic listed as a trial intervention. Synonyms known to ClinicalTrials.gov match too (Keytruda and MK-3475 both match pembrolizumab)."
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition",
+            "description": "Disease or condition studied."
+          },
+          "sponsor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sponsor",
+            "description": "Lead or collaborating sponsor."
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 60
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country",
+            "description": "Country with at least one trial site."
+          },
+          "phases": {
+            "items": {
+              "$ref": "#/components/schemas/Phase"
+            },
+            "type": "array",
+            "title": "Phases",
+            "description": "Keep trials in any of these."
+          },
+          "statuses": {
+            "items": {
+              "$ref": "#/components/schemas/Status"
+            },
+            "type": "array",
+            "title": "Statuses",
+            "description": "Keep trials whose overall status is any of these."
+          },
+          "start_year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2100.0,
+                "minimum": 1900.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Year",
+            "description": "Earliest trial start year, inclusive."
+          },
+          "end_year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2100.0,
+                "minimum": 1900.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Year",
+            "description": "Latest trial start year, inclusive."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "Filters",
+        "description": "Which trials to include. Every field is optional; set fields are ANDed together."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Meta": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "ClinicalTrials.gov API v2"
+          },
+          "data_timestamp": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data Timestamp",
+            "description": "When ClinicalTrials.gov last refreshed."
+          },
+          "spec": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnalysisSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The plan that was executed."
+          },
+          "counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Counts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "description": "True when only the first trials were fetched.",
+            "default": false
+          },
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Notes",
+            "description": "Data caveats found while building the chart, e.g. estimated start dates."
+          },
+          "models": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Models",
+            "description": "Model used for each role, e.g. planner and labeler."
+          },
+          "usage": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Usage",
+            "description": "Planner model requests, tool calls and tokens."
+          }
+        },
+        "type": "object",
+        "title": "Meta"
+      },
+      "NetworkData": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/NetworkNode"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/NetworkEdge"
+            },
+            "type": "array",
+            "title": "Edges"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nodes",
+          "edges"
+        ],
+        "title": "NetworkData"
+      },
+      "NetworkEdge": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "trial_count": {
+            "type": "integer",
+            "title": "Trial Count",
+            "description": "Distinct trials linking both ends; width by this."
+          },
+          "nct_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Nct Ids"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "type": "array",
+            "title": "Citations",
+            "description": "Field values naming both ends, for up to three of the trials."
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "target",
+          "trial_count",
+          "nct_ids",
+          "citations"
+        ],
+        "title": "NetworkEdge"
+      },
+      "NetworkEncoding": {
+        "properties": {
+          "node_label": {
+            "type": "string",
+            "const": "label",
+            "title": "Node Label",
+            "default": "label"
+          },
+          "node_size": {
+            "type": "string",
+            "const": "trial_count",
+            "title": "Node Size",
+            "default": "trial_count"
+          },
+          "node_color": {
+            "type": "string",
+            "const": "group",
+            "title": "Node Color",
+            "default": "group"
+          },
+          "edge_width": {
+            "type": "string",
+            "const": "trial_count",
+            "title": "Edge Width",
+            "default": "trial_count"
+          }
+        },
+        "type": "object",
+        "title": "NetworkEncoding",
+        "description": "Fixed mapping from node and edge fields to visual channels."
+      },
+      "NetworkNode": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "group": {
+            "$ref": "#/components/schemas/Dimension",
+            "description": "Entity kind; colour nodes by this."
+          },
+          "trial_count": {
+            "type": "integer",
+            "title": "Trial Count",
+            "description": "Distinct trials touching this node; size by this."
+          },
+          "nct_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Nct Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "group",
+          "trial_count",
+          "nct_ids"
+        ],
+        "title": "NetworkNode"
+      },
+      "NetworkVisualization": {
+        "properties": {
+          "type": {
+            "type": "string",
+            "const": "network",
+            "title": "Type"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "encoding": {
+            "$ref": "#/components/schemas/NetworkEncoding"
+          },
+          "data": {
+            "$ref": "#/components/schemas/NetworkData"
+          }
+        },
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "data"
+        ],
+        "title": "NetworkVisualization",
+        "description": "Node-link graph: bipartite when nodes come from two groups, co-occurrence when one."
+      },
+      "Phase": {
+        "type": "string",
+        "enum": [
+          "NA",
+          "EARLY_PHASE1",
+          "PHASE1",
+          "PHASE2",
+          "PHASE3",
+          "PHASE4"
+        ],
+        "title": "Phase"
+      },
+      "Series": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 60,
+            "title": "Label",
+            "description": "Legend label for this cohort."
+          },
+          "filters": {
+            "$ref": "#/components/schemas/Filters",
+            "description": "Added on top of the plan's shared filters."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "label",
+          "filters"
+        ],
+        "title": "Series",
+        "description": "One cohort in a comparison, e.g. the trials for one of two drugs."
+      },
+      "Status": {
+        "type": "string",
+        "enum": [
+          "ACTIVE_NOT_RECRUITING",
+          "COMPLETED",
+          "ENROLLING_BY_INVITATION",
+          "NOT_YET_RECRUITING",
+          "RECRUITING",
+          "SUSPENDED",
+          "TERMINATED",
+          "WITHDRAWN",
+          "AVAILABLE",
+          "NO_LONGER_AVAILABLE",
+          "TEMPORARILY_NOT_AVAILABLE",
+          "APPROVED_FOR_MARKETING",
+          "WITHHELD",
+          "UNKNOWN"
+        ],
+        "title": "Status"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "VisualizeRequest": {
+        "properties": {
+          "drug_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drug Name",
+            "description": "Drug or biologic listed as a trial intervention. Synonyms known to ClinicalTrials.gov match too (Keytruda and MK-3475 both match pembrolizumab)."
+          },
+          "condition": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition",
+            "description": "Disease or condition studied."
+          },
+          "sponsor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sponsor",
+            "description": "Lead or collaborating sponsor."
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 60
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country",
+            "description": "Country with at least one trial site."
+          },
+          "phases": {
+            "items": {
+              "$ref": "#/components/schemas/Phase"
+            },
+            "type": "array",
+            "title": "Phases",
+            "description": "Keep trials in any of these."
+          },
+          "statuses": {
+            "items": {
+              "$ref": "#/components/schemas/Status"
+            },
+            "type": "array",
+            "title": "Statuses",
+            "description": "Keep trials whose overall status is any of these."
+          },
+          "start_year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2100.0,
+                "minimum": 1900.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start Year",
+            "description": "Earliest trial start year, inclusive."
+          },
+          "end_year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2100.0,
+                "minimum": 1900.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Year",
+            "description": "Latest trial start year, inclusive."
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 3,
+            "title": "Query",
+            "description": "Natural-language question about clinical trials."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "VisualizeRequest",
+        "description": "Body of POST /visualize: a question plus optional filters.\n\nFilters given here are hard constraints. The agent may add filters it reads from the\nquestion, but it cannot drop or change these.",
+        "examples": [
+          {
+            "drug_name": "Pembrolizumab",
+            "query": "How has the number of trials for this drug changed over time?"
+          },
+          {
+            "query": "Show a network of sponsors and drugs for glioblastoma trials"
+          }
+        ]
+      },
+      "VisualizeResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "cannot_answer",
+              "error"
+            ],
+            "title": "Status"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "visualization": {
+            "anyOf": [
+              {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ChartVisualization"
+                  },
+                  {
+                    "$ref": "#/components/schemas/NetworkVisualization"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "type",
+                  "mapping": {
+                    "bar": "#/components/schemas/ChartVisualization",
+                    "grouped_bar": "#/components/schemas/ChartVisualization",
+                    "histogram": "#/components/schemas/ChartVisualization",
+                    "network": "#/components/schemas/NetworkVisualization",
+                    "scatter": "#/components/schemas/ChartVisualization",
+                    "time_series": "#/components/schemas/ChartVisualization"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visualization"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "VisualizeResponse",
+        "description": "Body returned by POST /visualize.\n\n`status` decides what is present:\n- ok: `visualization` and `meta.spec` are set.\n- cannot_answer: `message` says why; `visualization` is null.\n- error: `message` describes the failure; `visualization` is null."
+      },
+      "XYEncoding": {
+        "properties": {
+          "x": {
+            "$ref": "#/components/schemas/Channel"
+          },
+          "x2": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Channel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bin end, for histograms."
+          },
+          "y": {
+            "$ref": "#/components/schemas/Channel"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Channel"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Series, for grouped bars and multi-line."
+          }
+        },
+        "type": "object",
+        "required": [
+          "x",
+          "y"
+        ],
+        "title": "XYEncoding"
+      }
+    }
+  }
+}
