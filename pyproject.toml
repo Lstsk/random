@@ -1,0 +1,40 @@
+[project]
+name = "trialviz"
+version = "0.1.0"
+description = "Turns clinical-trial questions into visualization specs backed by the ClinicalTrials.gov API"
+authors = [
+    { name = "lstsk", email = "carsonlin713@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.142.2",
+    "httpx2>=2.13.1",
+    "pydantic>=2.13.5",
+    "pydantic-ai-slim[anthropic,openai,openrouter]>=2.52.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.0,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pydantic-evals>=2.52.0",
+    "pytest>=9.1.1",
+    "pytest-recording>=0.13.4",
+    "ruff>=0.16.10",
+    "syrupy>=6.1.1",
+    "ty>=0.0.84",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# pydantic-graph asks for an event loop the old way when run_sync starts one.
+filterwarnings = ["ignore:There is no current event loop:DeprecationWarning"]
