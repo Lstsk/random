@@ -82,9 +82,13 @@ class Built:
 
 @dataclass
 class Bucket:
-    """The trials behind one datum, each with the evidence that put it there."""
+    """The trials behind one datum, each with the evidence that put it there.
+
+    `total` is set when the API counted the datum; `evidence` then holds sample trials only.
+    """
 
     evidence: dict[Entry, list[Citation]] = field(default_factory=dict)
+    total: int | None = None
 
     def add(self, entry: Entry, evidence: Iterable[Citation]) -> None:
         self.evidence.setdefault(entry, list(evidence))
@@ -93,10 +97,14 @@ class Bucket:
     def nct_ids(self) -> list[str]:
         return sorted({nct_id for _, nct_id in self.evidence}, reverse=True)
 
+    @property
+    def trial_count(self) -> int:
+        return self.total if self.total is not None else len(self.nct_ids)
+
     def support(self) -> dict:
         cited = sorted(self.evidence, key=lambda entry: entry[1], reverse=True)[:CITED_TRIALS]
         return {
-            "trial_count": len(self.nct_ids),
+            "trial_count": self.trial_count,
             "nct_ids": self.nct_ids,
             "citations": [c.model_dump() for entry in cited for c in self.evidence[entry]],
         }
@@ -141,20 +149,62 @@ def _top(totals: dict, limit: int) -> list:
     return sorted(totals, key=lambda key: (-totals[key], str(key)))[:limit]
 
 
+def _buckets(
+    spec: AnalysisSpec, data: Dataset, key: Callable[[str | int], str | int]
+) -> tuple[dict[tuple[str | int, str | None], Bucket], set[Entry]]:
+    """Group trials into (category, series) buckets for bar and line charts.
+
+    With server counts the buckets come straight from the counts. Otherwise every fetched trial
+    goes into each bucket its values put it in, and trials with no value are returned apart.
+    """
+    buckets: dict[tuple[str | int, str | None], Bucket] = {}
+    if data.method == "count":
+        for (series, combo), count in data.counts.items():
+            if len(spec.dimensions) > 1:
+                series = str(label(spec.dimensions[1], combo[1]))
+            buckets[(key(combo[0]), series)] = Bucket(dict(count.evidence), total=count.total)
+        return buckets, set()
+
+    dimension = spec.dimensions[0]
+    missing: set[Entry] = set()
+    for trial in data.trials:
+        entry = (trial.series, trial.nct_id)
+        pairs = list(product(trial.facts[dimension], _series_of(spec, trial)))
+        if not pairs:
+            missing.add(entry)
+        for fact, (series, series_evidence) in pairs:
+            buckets.setdefault((key(fact.value), series), Bucket()).add(
+                entry, fact.evidence + series_evidence
+            )
+    return buckets, missing
+
+
 def _accounting(
-    data: Dataset, plotted: set[Entry], missing: set[Entry], dropped_reason: str
+    data: Dataset,
+    plotted: set[Entry],
+    missing: set[Entry],
+    dropped_reason: str,
+    missing_reason: str = "no value for a plotted field",
 ) -> tuple[int, list[Exclusion]]:
+    if data.method == "count":
+        # The API counted every matching trial; only those with no value are known to be left out.
+        excluded = [Exclusion(reason=missing_reason, count=data.missing)] if data.missing else []
+        return data.matched - data.missing, excluded
     entries = {(t.series, t.nct_id) for t in data.trials}
     excluded = []
     if missing:
-        excluded.append(Exclusion(reason="no value for a plotted field", count=len(missing)))
+        excluded.append(Exclusion(reason=missing_reason, count=len(missing)))
     if dropped := entries - plotted - missing:
         excluded.append(Exclusion(reason=dropped_reason, count=len(dropped)))
     return len(plotted), excluded
 
 
+MULTI_VALUED = {Dimension.PHASE, Dimension.INTERVENTION_TYPE}
+
+
 def _multi_valued_note(data: Dataset, dimension: Dimension) -> list[str]:
-    if any(len(t.facts[dimension]) > 1 for t in data.trials):
+    counted_multi = data.method == "count" and dimension in MULTI_VALUED
+    if counted_multi or any(len(t.facts[dimension]) > 1 for t in data.trials):
         return [
             f"A trial can have several {TITLES[dimension].lower()} values and counts toward each."
         ]
@@ -166,20 +216,11 @@ def _multi_valued_note(data: Dataset, dimension: Dimension) -> list[str]:
 
 def _bars(spec: AnalysisSpec, data: Dataset) -> Built:
     dimension = spec.dimensions[0]
-    buckets: dict[tuple[str | int, str | None], Bucket] = {}
-    missing: set[Entry] = set()
-    for trial in data.trials:
-        entry = (trial.series, trial.nct_id)
-        pairs = list(product(trial.facts[dimension], _series_of(spec, trial)))
-        if not pairs:
-            missing.add(entry)
-        for fact, (series, series_evidence) in pairs:
-            key = (label(dimension, fact.value), series)
-            buckets.setdefault(key, Bucket()).add(entry, fact.evidence + series_evidence)
+    buckets, missing = _buckets(spec, data, lambda value: label(dimension, value))
 
     totals: dict[str | int, int] = {}
     for (category, _), bucket in buckets.items():
-        totals[category] = totals.get(category, 0) + len(bucket.evidence)
+        totals[category] = totals.get(category, 0) + bucket.trial_count
     limit = spec.top_n or MAX_BARS
     if dimension == Dimension.PHASE:
         categories = [p for p in PHASE_LABELS.values() if p in totals]
@@ -187,7 +228,7 @@ def _bars(spec: AnalysisSpec, data: Dataset) -> Built:
         categories = _top(totals, limit)
     series_totals: dict[str | None, int] = {}
     for (_, series), bucket in buckets.items():
-        series_totals[series] = series_totals.get(series, 0) + len(bucket.evidence)
+        series_totals[series] = series_totals.get(series, 0) + bucket.trial_count
     kept_series = (
         set(_top(series_totals, MAX_SERIES)) if len(spec.dimensions) > 1 else set(series_totals)
     )
@@ -198,7 +239,10 @@ def _bars(spec: AnalysisSpec, data: Dataset) -> Built:
             row = {dimension.value: category} | ({"series": series} if series else {})
             rows.append(row | bucket.support())
             plotted |= bucket.evidence.keys()
-    rows.sort(key=lambda r: (categories.index(r[dimension.value]), str(r.get("series"))))
+    series_order = [s.label for s in spec.compare] or _top(series_totals, MAX_SERIES)
+    rows.sort(
+        key=lambda r: (categories.index(r[dimension.value]), series_order.index(r.get("series")))
+    )
 
     color = None
     if spec.compare or len(spec.dimensions) > 1:
@@ -223,28 +267,21 @@ def _bars(spec: AnalysisSpec, data: Dataset) -> Built:
 
 def _time_series(spec: AnalysisSpec, data: Dataset) -> Built:
     this_year = date.today().year
-    buckets: dict[tuple[int, str | None], Bucket] = {}
-    missing: set[Entry] = set()
-    estimated: set[Entry] = set()
-    for trial in data.trials:
-        entry = (trial.series, trial.nct_id)
-        starts, series_of = trial.facts[Dimension.START_YEAR], _series_of(spec, trial)
-        if not starts or not series_of:
-            missing.add(entry)
-            continue
-        start = starts[0]
-        if is_estimated(start):
-            estimated.add(entry)
-        for series, series_evidence in series_of:
-            buckets.setdefault((int(start.value), series), Bucket()).add(
-                entry, start.evidence + series_evidence
-            )
+    buckets, missing = _buckets(spec, data, int)
+    estimated = {
+        (t.series, t.nct_id)
+        for t in data.trials
+        if any(is_estimated(f) for f in t.facts[Dimension.START_YEAR])
+    }
 
     series_totals: dict[str | None, int] = {}
     for (_, series), bucket in buckets.items():
-        series_totals[series] = series_totals.get(series, 0) + len(bucket.evidence)
+        series_totals[series] = series_totals.get(series, 0) + bucket.trial_count
     kept_series = _top(series_totals, MAX_SERIES)
-    years = [year for year, series in buckets if series in kept_series] or [this_year]
+    years = [
+        int(y) for (y, series), b in buckets.items() if series in kept_series and b.trial_count
+    ]
+    years = years or [this_year]
     first = spec.filters.start_year or min(years)
     last = spec.filters.end_year or max(years)
 
@@ -432,7 +469,13 @@ def _network(spec: AnalysisSpec, data: Dataset) -> Built:
         notes.append(
             f"Showing {len(shown)} of {len(node_trials)} connected nodes, the most frequent."
         )
-    count, excluded = _accounting(data, plotted, missing, "only linked through nodes not shown")
+    count, excluded = _accounting(
+        data,
+        plotted,
+        missing,
+        "only linked through nodes not shown",
+        missing_reason="nothing to link (needs a value at both ends of an edge)",
+    )
     return Built(
         NetworkVisualization(type="network", title=spec.title, data=network), count, excluded, notes
     )

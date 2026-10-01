@@ -3,7 +3,7 @@
 import json
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -37,8 +37,8 @@ class SearchResult:
     truncated: bool
 
 
-def filters_to_params(filters: Filters) -> dict[str, str]:
-    """Translate filters into ClinicalTrials.gov search parameters."""
+def filters_to_params(filters: Filters, extra: Sequence[str] = ()) -> dict[str, str]:
+    """Translate filters, plus any extra AREA[...] clauses, into search parameters."""
     params: dict[str, str] = {}
     clauses: list[str] = []
     if filters.drug_name:
@@ -54,6 +54,7 @@ def filters_to_params(filters: Filters) -> dict[str, str]:
         start = f"{filters.start_year}-01-01" if filters.start_year else "MIN"
         end = f"{filters.end_year}-12-31" if filters.end_year else "MAX"
         clauses.append(f"AREA[StartDate]RANGE[{start},{end}]")
+    clauses += extra
     if clauses:
         params["filter.advanced"] = " AND ".join(clauses)
     if filters.condition:
@@ -94,9 +95,36 @@ class CTGovClient:
         self._lock = threading.Lock()
         self._last_request = 0.0
 
-    def count(self, filters: Filters) -> int:
-        body = self._get("/studies", filters_to_params(filters) | _COUNT_ONLY)
+    def count(self, filters: Filters, extra: Sequence[str] = ()) -> int:
+        body = self._get("/studies", filters_to_params(filters, extra) | _COUNT_ONLY)
         return body["totalCount"]
+
+    def sample(
+        self, filters: Filters, extra: Sequence[str], fields: list[str], size: int
+    ) -> SearchResult:
+        """One request: the exact match count plus the first `size` studies."""
+        params = filters_to_params(filters, extra) | {
+            "fields": ",".join(["NCTId", *fields]),
+            "pageSize": str(size),
+            "countTotal": "true",
+        }
+        body = self._get("/studies", params)
+        return SearchResult(body.get("studies", []), body["totalCount"], truncated=False)
+
+    def start_year_bound(self, filters: Filters, latest: bool) -> int | None:
+        """Earliest or latest start year among matching trials (one request)."""
+        params = filters_to_params(filters, ["NOT AREA[StartDate]MISSING"]) | {
+            "fields": "NCTId,StartDate",
+            "pageSize": "1",
+            "sort": "StartDate:desc" if latest else "StartDate:asc",
+        }
+        studies = self._get("/studies", params).get("studies", [])
+        date = (
+            studies[0]["protocolSection"]["statusModule"]["startDateStruct"]["date"]
+            if studies
+            else None
+        )
+        return int(date[:4]) if date else None
 
     def search(self, filters: Filters, fields: list[str], max_records: int) -> SearchResult:
         """Fetch matching studies with only `fields`, stopping after `max_records`."""

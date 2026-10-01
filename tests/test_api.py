@@ -8,7 +8,12 @@ from trialviz.api import Service, app, get_service
 
 models.ALLOW_MODEL_REQUESTS = False
 
-PLAN = {"dimensions": ["phase"], "chart": "bar", "title": "Glioblastoma trials by phase"}
+PLAN = {
+    "filters": {"condition": "glioblastoma"},
+    "dimensions": ["phase"],
+    "chart": "bar",
+    "title": "Glioblastoma trials by phase",
+}
 
 
 def planner(messages, info) -> ModelResponse:

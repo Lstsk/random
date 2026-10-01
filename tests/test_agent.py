@@ -73,6 +73,14 @@ def test_dropping_a_request_filter_goes_back_to_the_model():
     assert "drug_name" in feedback[0]
 
 
+def test_a_plan_without_filters_goes_back_to_the_model():
+    unfiltered = TIME_SERIES | {"filters": {}}
+    model, feedback = scripted(("run_analysis", unfiltered), ("run_analysis", TIME_SERIES))
+    response = ask(model)
+    assert response.status == "ok"
+    assert "whole registry" in feedback[0]
+
+
 def test_no_matching_trials_goes_back_to_the_model():
     model, feedback = scripted(
         ("run_analysis", TIME_SERIES),

@@ -287,7 +287,8 @@ class ChartVisualization(BaseModel):
 
     `data` is a flat list of records; `encoding` names the keys to plot. Besides those keys,
     every record carries:
-    - `nct_ids`: every trial counted in the record (one trial for scatter points),
+    - `nct_ids`: the trials counted in the record (one trial for scatter points); when
+      `meta.counts.method` is `server_counts` this is a sample and `trial_count` is the total,
     - `citations`: the field values that put up to three of those trials there.
     Time series records may also carry `partial_period: true` (the year is not over) or
     `projected: true` (the year is in the future, so its trials have planned start dates).
@@ -349,11 +350,16 @@ class Exclusion(BaseModel):
 
 
 class Counts(BaseModel):
-    """Accounts for every fetched trial: fetched = plotted + sum(excluded counts).
+    """How the numbers were obtained, and what was left out.
 
-    With a comparison, a trial that belongs to two series counts once in each.
+    - fetched_records: trials were downloaded and counted here; fetched = plotted +
+      sum(excluded counts). With a comparison, a trial in two series counts once in each.
+    - server_counts: ClinicalTrials.gov counted each value directly (used for large result sets
+      or when it needs fewer requests); counts cover every matching trial, and each datum's
+      nct_ids are a sample.
     """
 
+    method: Literal["fetched_records", "server_counts"] = "fetched_records"
     matched: int = Field(description="Trials the API matched for the filters.")
     fetched: int = Field(description="Trials downloaded; lower than matched when truncated.")
     plotted: int = Field(description="Trials that appear in the visualization.")

@@ -14,7 +14,7 @@ from trialviz.config import LABELER_SETTINGS
 from trialviz.schemas import Dimension
 
 BATCH_SIZE = 150
-PARALLEL_BATCHES = 4
+PARALLEL_BATCHES = 8
 
 INSTRUCTIONS = {
     Dimension.DRUG: (

@@ -6,11 +6,11 @@ from pathlib import Path
 
 from pydantic_ai.settings import ModelSettings
 
-DEFAULT_PLANNER_MODEL = "anthropic:claude-sonnet-5-5"
-DEFAULT_LABELER_MODEL = "anthropic:claude-haiku-4-5"
+DEFAULT_PLANNER_MODEL = "openai:gpt-5.4"
+DEFAULT_LABELER_MODEL = "openai:gpt-5.4-mini"
 
 # Uses Pydantic AI's provider-neutral settings, so switching provider needs no code change.
-# Models that cannot turn thinking off (e.g. Sonnet 5.5) get their lowest level instead.
+# Models that cannot turn thinking off get their lowest level instead.
 PLANNER_SETTINGS = ModelSettings(thinking="low", max_tokens=16_000)
 LABELER_SETTINGS = ModelSettings(thinking=False, max_tokens=16_000)
 

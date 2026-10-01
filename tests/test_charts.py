@@ -5,6 +5,7 @@ from conftest import FakeClient, study
 
 from trialviz import analysis, charts
 from trialviz.analysis import NoTrialsError
+from trialviz.ctgov import SearchResult
 from trialviz.schemas import AnalysisSpec
 
 STUDIES = [
@@ -167,3 +168,60 @@ def test_sponsor_drug_network_is_bipartite(labeler):
 def test_no_matching_trials_raises(labeler):
     with pytest.raises(NoTrialsError):
         run(labeler, [], dimensions=["phase"], chart="bar")
+
+
+class CountingClient:
+    """Answers per-value count queries like the API does, from a table of totals."""
+
+    def __init__(self, total: int, per_clause: dict[str, int]) -> None:
+        self.total, self.per_clause = total, per_clause
+        self.requests = 0
+
+    def count(self, filters, extra=()):
+        self.requests += 1
+        return self.per_clause.get(extra[0], 0) if extra else self.total
+
+    def sample(self, filters, extra, fields, size):
+        self.requests += 1
+        clause = extra[0]
+        total = self.per_clause.get(clause, 0)
+        phase = clause.removeprefix("AREA[Phase]")
+        studies = [study(f"NCT9{i}", phases=[phase]) for i in range(min(size, total))]
+        return SearchResult(studies, total, truncated=False)
+
+    def start_year_bound(self, filters, latest):
+        raise AssertionError("not needed for phases")
+
+
+def test_large_result_sets_are_counted_on_the_server(labeler):
+    client = CountingClient(
+        total=123_726,
+        per_clause={
+            "AREA[Phase]PHASE1": 25_148,
+            "AREA[Phase]PHASE2": 39_904,
+            "AREA[Phase]PHASE3": 13_000,
+            "(AREA[Phase]MISSING)": 26_250,
+        },
+    )
+    plan = AnalysisSpec(
+        filters={"condition": "cancer"}, dimensions=["phase"], chart="bar", title="T"
+    )
+    data = analysis.load(plan, client, labeler)
+    built = charts.build(plan, data)
+
+    assert data.method == "count" and data.matched == 123_726
+    assert client.requests == 1 + 6 + 1  # total, one per phase value, missing
+    rows = {r["phase"]: r for r in built.visualization.data}
+    assert rows["Phase 2"]["trial_count"] == 39_904
+    assert rows["Phase 2"]["nct_ids"] == ["NCT92", "NCT91", "NCT90"]
+    assert rows["Phase 2"]["citations"][0]["field"] == "protocolSection.designModule.phases[0]"
+    assert built.plotted == 123_726 - 26_250
+    assert [(e.reason, e.count) for e in built.excluded] == [
+        ("no value for a plotted field", 26_250)
+    ]
+
+
+def test_small_result_sets_are_still_fetched(labeler):
+    plan = AnalysisSpec(filters={"condition": "x"}, dimensions=["phase"], chart="bar", title="T")
+    data = analysis.load(plan, FakeClient(STUDIES), labeler)
+    assert data.method == "fetch"

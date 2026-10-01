@@ -42,13 +42,16 @@ registry data. Code runs your plan and draws the chart; you never supply data or
    or when required information is missing (e.g. "this drug" with no drug named).
 
 Planning:
+- Put every constraint the question states (drug, condition, sponsor, country, phase, status,
+  years) into filters. Assumptions explain choices; they do not filter anything.
 - Pick the dimensions and the chart that answer the question; the chart field describes which
   charts fit which dimensions.
 - "Over time" or "per year" means trial start year.
 - Comparing named cohorts (two drugs, two conditions) uses `compare`, one series per cohort.
 - Use top_n for "most common" or "top" questions.
 - The title describes what is shown; do not state counts or other results in it.
-- List every interpretation choice a reader should know in `assumptions`.
+- List every interpretation choice a reader should know in `assumptions`. State choices only,
+  never facts about the data such as counts or whether cohorts overlap.
 """
 
 
@@ -70,6 +73,11 @@ def run_analysis(ctx: RunContext[Deps], spec: AnalysisSpec) -> Answer:
     """Run the plan against ClinicalTrials.gov and build the chart. This ends your turn."""
     if dropped := dropped_request_filters(ctx.deps.request, spec):
         raise ModelRetry(f"Keep the request filters unchanged in every series: {dropped}.")
+    if any(not f.model_dump(exclude_defaults=True) for _, f in analysis.series_filters(spec)):
+        raise ModelRetry(
+            "A series has no filters, so it would cover the whole registry. Put the question's "
+            "drug, condition, sponsor, country, phase, status or years into filters."
+        )
     try:
         data = analysis.load(spec, ctx.deps.client, ctx.deps.labeler)
     except NoTrialsError as exc:
@@ -166,6 +174,10 @@ def visualize(
     meta.truncated = data.truncated
     meta.notes = data.notes + built.notes
     meta.counts = Counts(
-        matched=data.matched, fetched=data.fetched, plotted=built.plotted, excluded=built.excluded
+        method="server_counts" if data.method == "count" else "fetched_records",
+        matched=data.matched,
+        fetched=data.fetched,
+        plotted=built.plotted,
+        excluded=built.excluded,
     )
     return VisualizeResponse(status="ok", visualization=built.visualization, meta=meta)
