@@ -72,9 +72,9 @@
     "schemas": {
       "AnalysisSpec": {
         "properties": {
-          "filters": {
-            "$ref": "#/components/schemas/Filters",
-            "description": "Shared by every series. Must include every filter from the request."
+          "query": {
+            "$ref": "#/components/schemas/Query",
+            "description": "Selects the trials, shared by every series. The request's filters are added to it automatically."
           },
           "compare": {
             "items": {
@@ -98,6 +98,34 @@
           "chart": {
             "$ref": "#/components/schemas/ChartType",
             "description": "Must fit the dimensions. bar: one categorical dimension. grouped_bar: one categorical dimension plus a comparison or a second categorical dimension. time_series: start_year first, optionally a categorical dimension or a comparison as the series. histogram: one quantitative dimension. scatter: two different quantitative dimensions, one point per trial. network: one entity dimension (co-occurrence within a trial, e.g. drug-drug) or two different entity dimensions (bipartite, e.g. sponsor-drug)."
+          },
+          "keep_values": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/Dimension"
+            },
+            "type": "object",
+            "title": "Keep Values",
+            "description": "Plot only these values of a dimension (after names are normalized, e.g. lowercase generic drug names). Use it to scope a chart to e.g. one drug class."
+          },
+          "drop_values": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "propertyNames": {
+              "$ref": "#/components/schemas/Dimension"
+            },
+            "type": "object",
+            "title": "Drop Values",
+            "description": "Leave these values of a dimension out of the chart, e.g. ['pembrolizumab']."
           },
           "top_n": {
             "anyOf": [
@@ -359,110 +387,6 @@
           "count"
         ],
         "title": "Exclusion"
-      },
-      "Filters": {
-        "properties": {
-          "drug_name": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 100
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Drug Name",
-            "description": "Drug or biologic listed as a trial intervention. Synonyms known to ClinicalTrials.gov match too (Keytruda and MK-3475 both match pembrolizumab)."
-          },
-          "condition": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 100
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Condition",
-            "description": "Disease or condition studied."
-          },
-          "sponsor": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 100
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sponsor",
-            "description": "Lead or collaborating sponsor."
-          },
-          "country": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 60
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Country",
-            "description": "Country with at least one trial site."
-          },
-          "phases": {
-            "items": {
-              "$ref": "#/components/schemas/Phase"
-            },
-            "type": "array",
-            "title": "Phases",
-            "description": "Keep trials in any of these."
-          },
-          "statuses": {
-            "items": {
-              "$ref": "#/components/schemas/Status"
-            },
-            "type": "array",
-            "title": "Statuses",
-            "description": "Keep trials whose overall status is any of these."
-          },
-          "start_year": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 2100.0,
-                "minimum": 1900.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Start Year",
-            "description": "Earliest trial start year, inclusive."
-          },
-          "end_year": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 2100.0,
-                "minimum": 1900.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "End Year",
-            "description": "Latest trial start year, inclusive."
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "title": "Filters",
-        "description": "Which trials to include. Every field is optional; set fields are ANDed together."
       },
       "HTTPValidationError": {
         "properties": {
@@ -740,6 +664,93 @@
         ],
         "title": "Phase"
       },
+      "Query": {
+        "properties": {
+          "query_cond": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Cond",
+            "description": "Conditions; expands disease synonyms."
+          },
+          "query_intr": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Intr",
+            "description": "Interventions: names, other names and descriptions."
+          },
+          "query_term": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Term",
+            "description": "Anywhere in the record."
+          },
+          "query_spons": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Spons",
+            "description": "Lead sponsor or collaborators."
+          },
+          "query_locn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Locn",
+            "description": "Facility, city, state or country."
+          },
+          "filter_advanced": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filter Advanced",
+            "description": "Essie expression: AREA[Field]value, AND / OR / NOT, RANGE[a,b], MISSING."
+          },
+          "filter_overall_status": {
+            "items": {
+              "$ref": "#/components/schemas/Status"
+            },
+            "type": "array",
+            "title": "Filter Overall Status"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "Query",
+        "description": "A ClinicalTrials.gov search. Each field is the API parameter of the same name with the\ndot written as an underscore (query_cond is query.cond). The API skill documents the syntax."
+      },
       "Series": {
         "properties": {
           "label": {
@@ -748,16 +759,16 @@
             "title": "Label",
             "description": "Legend label for this cohort."
           },
-          "filters": {
-            "$ref": "#/components/schemas/Filters",
-            "description": "Added on top of the plan's shared filters."
+          "query": {
+            "$ref": "#/components/schemas/Query",
+            "description": "ANDed with the plan's shared query."
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
           "label",
-          "filters"
+          "query"
         ],
         "title": "Series",
         "description": "One cohort in a comparison, e.g. the trials for one of two drugs."

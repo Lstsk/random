@@ -9,7 +9,7 @@ from trialviz.api import Service, app, get_service
 models.ALLOW_MODEL_REQUESTS = False
 
 PLAN = {
-    "filters": {"condition": "glioblastoma"},
+    "query": {"query_cond": "glioblastoma"},
     "dimensions": ["phase"],
     "chart": "bar",
     "title": "Glioblastoma trials by phase",

@@ -12,7 +12,7 @@ from urllib.parse import urlencode
 
 import httpx2
 
-from trialviz.schemas import Filters
+from trialviz.schemas import API_PARAMS, Filters, Query
 
 BASE_URL = "https://clinicaltrials.gov/api/v2"
 PAGE_SIZE = 1000
@@ -38,9 +38,8 @@ class SearchResult:
     truncated: bool
 
 
-def filters_to_params(filters: Filters, extra: Sequence[str] = ()) -> dict[str, str]:
-    """Translate filters, plus any extra AREA[...] clauses, into search parameters."""
-    params: dict[str, str] = {}
+def request_query(filters: Filters) -> Query:
+    """The query that enforces a request's structured filters."""
     clauses: list[str] = []
     if filters.drug_name:
         name = _quote(filters.drug_name)
@@ -55,16 +54,32 @@ def filters_to_params(filters: Filters, extra: Sequence[str] = ()) -> dict[str, 
         start = f"{filters.start_year}-01-01" if filters.start_year else "MIN"
         end = f"{filters.end_year}-12-31" if filters.end_year else "MAX"
         clauses.append(f"AREA[StartDate]RANGE[{start},{end}]")
-    clauses += extra
-    if clauses:
-        params["filter.advanced"] = " AND ".join(clauses)
-    if filters.condition:
-        params["query.cond"] = filters.condition
-    if filters.sponsor:
-        params["query.spons"] = filters.sponsor
-    if filters.statuses:
-        params["filter.overallStatus"] = ",".join(filters.statuses)
-    return params
+    return Query(
+        query_cond=filters.condition,
+        query_spons=filters.sponsor,
+        filter_advanced=" AND ".join(clauses) or None,
+        filter_overall_status=filters.statuses,
+    )
+
+
+def and_queries(*queries: Query) -> Query:
+    """A query matching only trials that match every one of `queries`."""
+    merged: dict[str, Any] = {}
+    for name in API_PARAMS:
+        parts = [getattr(q, name) for q in queries if getattr(q, name)]
+        if parts:
+            merged[name] = parts[0] if len(parts) == 1 else " AND ".join(f"({p})" for p in parts)
+    status_sets = [set(q.filter_overall_status) for q in queries if q.filter_overall_status]
+    if status_sets:
+        statuses = set.intersection(*status_sets)
+        if not statuses:
+            raise ValueError("The status filters exclude each other, so no trial can match.")
+        merged["filter_overall_status"] = sorted(statuses)
+    return Query(**merged)
+
+
+def with_clauses(query: Query, clauses: Sequence[str]) -> Query:
+    return and_queries(query, Query(filter_advanced=" AND ".join(clauses))) if clauses else query
 
 
 def _quote(value: str) -> str:
@@ -97,20 +112,16 @@ class CTGovClient:
         self._last_request = 0.0
 
     @staticmethod
-    def count_url(filters: Filters, extra: Sequence[str] = ()) -> str:
+    def count_url(query: Query) -> str:
         """A browsable URL for the same count request `count` makes."""
-        query = urlencode(filters_to_params(filters, extra) | _COUNT_ONLY)
-        return f"{BASE_URL}/studies?{query}"
+        return f"{BASE_URL}/studies?{urlencode(query.params() | _COUNT_ONLY)}"
 
-    def count(self, filters: Filters, extra: Sequence[str] = ()) -> int:
-        body = self._get("/studies", filters_to_params(filters, extra) | _COUNT_ONLY)
-        return body["totalCount"]
+    def count(self, query: Query) -> int:
+        return self._get("/studies", query.params() | _COUNT_ONLY)["totalCount"]
 
-    def sample(
-        self, filters: Filters, extra: Sequence[str], fields: list[str], size: int
-    ) -> SearchResult:
+    def sample(self, query: Query, fields: Sequence[str], size: int) -> SearchResult:
         """One request: the exact match count plus the first `size` studies."""
-        params = filters_to_params(filters, extra) | {
+        params = query.params() | {
             "fields": ",".join(["NCTId", *fields]),
             "pageSize": str(size),
             "countTotal": "true",
@@ -118,9 +129,9 @@ class CTGovClient:
         body = self._get("/studies", params)
         return SearchResult(body.get("studies", []), body["totalCount"], truncated=False)
 
-    def start_year_bound(self, filters: Filters, latest: bool) -> int | None:
+    def start_year_bound(self, query: Query, latest: bool) -> int | None:
         """Earliest or latest start year among matching trials (one request)."""
-        params = filters_to_params(filters, ["NOT AREA[StartDate]MISSING"]) | {
+        params = with_clauses(query, ["NOT AREA[StartDate]MISSING"]).params() | {
             "fields": "NCTId,StartDate",
             "pageSize": "1",
             "sort": "StartDate:desc" if latest else "StartDate:asc",
@@ -133,9 +144,9 @@ class CTGovClient:
         )
         return int(date[:4]) if date else None
 
-    def search(self, filters: Filters, fields: list[str], max_records: int) -> SearchResult:
+    def search(self, query: Query, fields: Sequence[str], max_records: int) -> SearchResult:
         """Fetch matching studies with only `fields`, stopping after `max_records`."""
-        params = filters_to_params(filters) | {
+        params = query.params() | {
             "fields": ",".join(["NCTId", *fields]),
             "pageSize": str(min(PAGE_SIZE, max_records)),
             "countTotal": "true",
@@ -155,7 +166,22 @@ class CTGovClient:
     def data_timestamp(self) -> str | None:
         return self._get("/version", {}).get("dataTimestamp")
 
-    def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
+    def field_paths(self) -> dict[str, str]:
+        """Searchable field name (e.g. InterventionName) -> path in a study record."""
+        paths: dict[str, str] = {}
+
+        def walk(nodes: list[dict[str, Any]], prefix: str) -> None:
+            for node in nodes:
+                path = f"{prefix}.{node['name']}" if prefix else node["name"]
+                if node.get("children"):
+                    walk(node["children"], path)
+                elif node.get("piece"):
+                    paths[node["piece"]] = path
+
+        walk(self._get("/studies/metadata", {}), "")
+        return paths
+
+    def _get(self, path: str, params: dict[str, str]) -> Any:
         key = path + "?" + "&".join(f"{k}={v}" for k, v in sorted(params.items()))
         if (cached := self._cached(key)) is not None:
             return cached

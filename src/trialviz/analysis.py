@@ -5,20 +5,22 @@ from it can cite its source.
 """
 
 import math
+import re
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from itertools import product
 from typing import Any, Literal
 
-from trialviz.ctgov import PAGE_SIZE, CTGovClient
+from trialviz.ctgov import PAGE_SIZE, CTGovClient, and_queries, with_clauses
 from trialviz.schemas import (
     AnalysisSpec,
     ChartType,
     Citation,
     Dimension,
-    Filters,
     Phase,
+    Query,
     SourceQuery,
     Status,
 )
@@ -117,44 +119,52 @@ def load(
     spec: AnalysisSpec,
     client: CTGovClient,
     canonicalize: Canonicalizer,
+    required: Query | None = None,
     max_records: int = MAX_RECORDS,
 ) -> Dataset:
-    series = series_filters(spec)
-    fields = sorted(
-        {name for d in spec.dimensions for name in FIELDS[d]}
-        | {name for _, f in series for name in _context_fields(f)}
-    )
-    totals = [client.count(filters) for _, filters in series]
+    """Load what the plan needs. `required` (the request's own filters) applies to every series."""
+    series = series_queries(spec, required or Query())
+    paths = client.field_paths()
+    searched = [name for _, q in series for name in searched_fields(q) if name in paths]
+    cited = list(dict.fromkeys(searched))
+    fields = sorted({name for d in spec.dimensions for name in FIELDS[d]} | {"BriefTitle", *cited})
+    totals = [client.count(query) for _, query in series]
     if not any(totals):
-        raise NoTrialsError("No trials match these filters.")
+        raise NoTrialsError("No trials match this query.")
     queries = [
-        SourceQuery(series=label, url=client.count_url(filters), matched=total)
-        for (label, filters), total in zip(series, totals, strict=True)
+        SourceQuery(series=label, url=client.count_url(query), matched=total)
+        for (label, query), total in zip(series, totals, strict=True)
     ]
+    context = partial(_context, fields=cited, paths=paths)
     if values := _count_plan(spec, client, series, totals, max_records):
-        data = _load_counts(spec, client, series, totals, values, fields)
+        data = _load_counts(spec, client, series, totals, values, fields, context)
         data.queries = queries
         return data
 
     trials: list[Trial] = []
     matched = fetched = 0
     truncated = False
-    for label, filters in series:
-        result = client.search(filters, fields, max_records)
+    for label, query in series:
+        result = client.search(query, fields, max_records)
         matched += result.total
         fetched += len(result.studies)
         truncated |= result.truncated
         for study in result.studies:
             nct_id = study["protocolSection"]["identificationModule"]["nctId"]
             facts = {d: EXTRACTORS[d](nct_id, study) for d in spec.dimensions}
-            trials.append(Trial(nct_id, label, facts, _context(nct_id, study, filters)))
+            trials.append(Trial(nct_id, label, facts, context(nct_id, study)))
 
     if not trials:
-        raise NoTrialsError("No trials match these filters.")
+        raise NoTrialsError("No trials match this query.")
 
     notes: list[str] = []
     for dimension in LABELED.intersection(spec.dimensions):
         notes += _canonicalize(trials, dimension, canonicalize)
+    for trial in trials:
+        for dimension in spec.dimensions:
+            trial.facts[dimension] = [
+                f for f in trial.facts[dimension] if _in_scope(spec, dimension, f.value)
+            ]
     if truncated:
         notes.append(f"Only the first {max_records:,} matching trials per series were fetched.")
     return Dataset(trials, matched, fetched, truncated, notes, queries=queries)
@@ -163,7 +173,7 @@ def load(
 def _count_plan(
     spec: AnalysisSpec,
     client: CTGovClient,
-    series: list[tuple[str | None, Filters]],
+    series: list[tuple[str | None, Query]],
     totals: list[int],
     max_records: int,
 ) -> list[list[str | int]] | None:
@@ -184,15 +194,15 @@ def _count_plan(
     values: list[list[str | int]] = []
     for dimension in spec.dimensions:
         if dimension == Dimension.START_YEAR:
-            firsts = [f.start_year or client.start_year_bound(f, latest=False) for _, f in series]
-            lasts = [f.end_year or client.start_year_bound(f, latest=True) for _, f in series]
+            firsts = [client.start_year_bound(q, latest=False) for _, q in series]
+            lasts = [client.start_year_bound(q, latest=True) for _, q in series]
             known_first = [y for y in firsts if y]
             known_last = [y for y in lasts if y]
             if not known_first or not known_last:
                 return None
             values.append(list(range(min(known_first), max(known_last) + 1)))
         else:
-            values.append(list(COUNTABLE[dimension][1]))
+            values.append([v for v in COUNTABLE[dimension][1] if _in_scope(spec, dimension, v)])
     queries = math.prod(len(v) for v in values) * len(series)
     if queries > MAX_COUNT_QUERIES or (not truncates and queries >= pages):
         return None
@@ -202,17 +212,19 @@ def _count_plan(
 def _load_counts(
     spec: AnalysisSpec,
     client: CTGovClient,
-    series: list[tuple[str | None, Filters]],
+    series: list[tuple[str | None, Query]],
     totals: list[int],
     values: list[list[str | int]],
     fields: list[str],
+    context: Callable[[str, dict[str, Any]], list[Citation]],
 ) -> Dataset:
     counts: dict[tuple[str | None, tuple[str | int, ...]], Count] = {}
     fetched = missing = 0
-    for label, filters in series:
+    for label, query in series:
         for combo in product(*values):
             clauses = [_clause(d, v) for d, v in zip(spec.dimensions, combo, strict=True)]
-            result = client.sample(filters, clauses, fields, SAMPLE_SIZE)
+            bucket_query = with_clauses(query, clauses)
+            result = client.sample(bucket_query, fields, SAMPLE_SIZE)
             fetched += len(result.studies)
             if not result.total:
                 continue
@@ -226,11 +238,11 @@ def _load_counts(
                     if fact.value == value
                     for citation in fact.evidence
                 ]
-                evidence[(label, nct_id)] = grouping + _context(nct_id, study, filters)
-            query = client.count_url(filters, clauses)
-            counts[(label, combo)] = Count(result.total, evidence, query)
+                evidence[(label, nct_id)] = grouping + context(nct_id, study)
+            url = client.count_url(bucket_query)
+            counts[(label, combo)] = Count(result.total, evidence, url)
         no_value = " OR ".join(f"AREA[{COUNTABLE[d][0]}]MISSING" for d in spec.dimensions)
-        missing += client.count(filters, [f"({no_value})"])
+        missing += client.count(with_clauses(query, [f"({no_value})"]))
     note = (
         "Counts come straight from ClinicalTrials.gov, one query per value, so they cover every "
         "matching trial; each datum cites a few example trials rather than listing all of them."
@@ -246,14 +258,26 @@ def _clause(dimension: Dimension, value: str | int) -> str:
     return f"AREA[{COUNTABLE[dimension][0]}]{value}"
 
 
-def series_filters(spec: AnalysisSpec) -> list[tuple[str | None, Filters]]:
-    """The effective filters of each series; a single unlabeled series without a comparison."""
+def series_queries(spec: AnalysisSpec, required: Query) -> list[tuple[str | None, Query]]:
+    """The full query of each series: the request's filters AND the plan's shared query AND the
+    series' own query. Without a comparison there is one unlabeled series."""
     if not spec.compare:
-        return [(None, spec.filters)]
-    return [
-        (s.label, spec.filters.model_copy(update=s.filters.model_dump(exclude_defaults=True)))
-        for s in spec.compare
-    ]
+        return [(None, and_queries(required, spec.query))]
+    return [(s.label, and_queries(required, spec.query, s.query)) for s in spec.compare]
+
+
+def _norm(value: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value).lower())
+
+
+def _in_scope(spec: AnalysisSpec, dimension: Dimension, value: object) -> bool:
+    """Whether the plan's keep_values / drop_values let this value onto the chart.
+
+    Values compare without case or punctuation, so "Phase 2" matches the API's PHASE2.
+    """
+    keep = [_norm(v) for v in spec.keep_values.get(dimension, [])]
+    drop = [_norm(v) for v in spec.drop_values.get(dimension, [])]
+    return (not keep or _norm(value) in keep) and _norm(value) not in drop
 
 
 def is_estimated(fact: Fact) -> bool:
@@ -378,71 +402,57 @@ def _duration_months(nct_id: str, study: dict[str, Any]) -> list[Fact]:
     return [Fact(months, evidence)]
 
 
-def _other_names(nct_id: str, study: dict[str, Any]) -> list[Fact]:
-    facts = []
-    for i, item in enumerate(_at(study, INTERVENTIONS) or []):
-        for j, name in enumerate(item.get("otherNames", [])):
-            facts.append(
-                Fact(name, (_cite(nct_id, f"{INTERVENTIONS}[{i}].otherNames[{j}]", name),))
-            )
-    return facts
-
-
 TITLE = f"{PS}.identificationModule.briefTitle"
 
-
-def _context_fields(filters: Filters) -> list[str]:
-    """API fields needed to show why a trial matches these filters."""
-    wanted = ["BriefTitle"]
-    if filters.drug_name:
-        wanted += ["InterventionName", "InterventionOtherName"]
-    if filters.condition:
-        wanted.append("Condition")
-    if filters.sponsor:
-        wanted += ["LeadSponsorName", "CollaboratorName"]
-    if filters.country:
-        wanted.append("LocationCountry")
-    if filters.phases:
-        wanted.append("Phase")
-    if filters.statuses:
-        wanted.append("OverallStatus")
-    if filters.start_year or filters.end_year:
-        wanted.append("StartDate")
-    return wanted
+# Search parameters -> the record fields they look in. AREA[Field] terms name theirs directly.
+PARAM_FIELDS = {
+    "query.cond": ["Condition"],
+    "query.intr": ["InterventionName", "InterventionOtherName"],
+    "query.spons": ["LeadSponsorName", "CollaboratorName"],
+    "query.locn": ["LocationCountry"],
+    "filter.overallStatus": ["OverallStatus"],
+}
+MAX_CITED_VALUES = 12
 
 
-def _context(nct_id: str, study: dict[str, Any], filters: Filters) -> list[Citation]:
-    """The trial's title, and the field values each filter matched on.
+def searched_fields(query: Query) -> list[str]:
+    """Record fields a query searches, in the order they appear."""
+    params = query.params()
+    names = [name for param in params for name in PARAM_FIELDS.get(param, [])]
+    names += re.findall(r"AREA\[(\w+)\]", params.get("filter.advanced", ""))
+    return list(dict.fromkeys(names))
 
-    For name filters (drug, condition, sponsor) the API's synonym search decided the match, so
-    every value of the searched fields is cited and the reader can see which one matched, e.g.
-    an intervention listed only as "MK-3475" for a pembrolizumab filter.
+
+def _context(
+    nct_id: str, study: dict[str, Any], fields: list[str], paths: dict[str, str]
+) -> list[Citation]:
+    """The trial's title, and its values of every field the query searched.
+
+    The API decided the match (with synonym expansion for names), so the searched fields are
+    cited in full and the reader can see which value matched, e.g. an intervention listed only
+    as "MK-3475" for a pembrolizumab search.
     """
-    facts: list[Fact] = []
-    if filters.drug_name:
-        facts += _from_list(INTERVENTIONS, "name")(nct_id, study) + _other_names(nct_id, study)
-    if filters.condition:
-        facts += EXTRACTORS[Dimension.CONDITION](nct_id, study)
-    if filters.sponsor:
-        facts += EXTRACTORS[Dimension.LEAD_SPONSOR](nct_id, study)
-        facts += _from_list(f"{PS}.sponsorCollaboratorsModule.collaborators", "name")(nct_id, study)
-    if filters.country:
-        wanted = filters.country.strip().lower()
-        facts += [
-            f
-            for f in EXTRACTORS[Dimension.COUNTRY](nct_id, study)
-            if str(f.value).lower() == wanted
-        ]
-    if filters.phases:
-        facts += EXTRACTORS[Dimension.PHASE](nct_id, study)
-    if filters.statuses:
-        facts += EXTRACTORS[Dimension.STATUS](nct_id, study)
-    if filters.start_year or filters.end_year:
-        facts += EXTRACTORS[Dimension.START_YEAR](nct_id, study)
-    citations = [c.model_copy(update={"kind": "filter"}) for fact in facts for c in fact.evidence]
+    citations = []
     if title := _at(study, TITLE):
-        citations.insert(0, Citation(nct_id=nct_id, field=TITLE, value=title, kind="title"))
+        citations.append(Citation(nct_id=nct_id, field=TITLE, value=title, kind="title"))
+    for name in fields:
+        for path, value in values_at(study, paths[name])[:MAX_CITED_VALUES]:
+            citations.append(Citation(nct_id=nct_id, field=path, value=str(value), kind="filter"))
     return citations
+
+
+def values_at(node: Any, path: str, prefix: str = "") -> list[tuple[str, Any]]:
+    """Every value at a metadata path, with list positions filled in (a.b[2].c)."""
+    if isinstance(node, list):
+        return [
+            hit for i, item in enumerate(node) for hit in values_at(item, path, f"{prefix}[{i}]")
+        ]
+    if not path:
+        return [(prefix, node)] if node is not None else []
+    key, _, rest = path.partition(".")
+    if not isinstance(node, dict) or key not in node:
+        return []
+    return values_at(node[key], rest, f"{prefix}.{key}" if prefix else key)
 
 
 EXTRACTORS: dict[Dimension, Callable[[str, dict[str, Any]], list[Fact]]] = {

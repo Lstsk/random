@@ -26,7 +26,7 @@ def spec(**overrides):
     ],
 )
 def test_valid_chart_and_dimension_combinations(dimensions, chart, compare):
-    series = [{"label": label, "filters": {"drug_name": label}} for label in compare]
+    series = [{"label": label, "query": {"query_intr": label}} for label in compare]
     spec(dimensions=dimensions, chart=chart, compare=series)
 
 
@@ -47,7 +47,7 @@ def test_valid_chart_and_dimension_combinations(dimensions, chart, compare):
     ],
 )
 def test_invalid_chart_and_dimension_combinations(dimensions, chart, compare):
-    series = [{"label": label, "filters": {"drug_name": label}} for label in compare]
+    series = [{"label": label, "query": {"query_intr": label}} for label in compare]
     with pytest.raises(ValidationError):
         spec(dimensions=dimensions, chart=chart, compare=series)
 

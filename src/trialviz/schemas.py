@@ -152,13 +152,58 @@ CHART_RULES = {
 }
 
 
+API_PARAMS = {
+    "query_cond": "query.cond",
+    "query_intr": "query.intr",
+    "query_term": "query.term",
+    "query_spons": "query.spons",
+    "query_locn": "query.locn",
+    "filter_advanced": "filter.advanced",
+}
+
+
+class Query(BaseModel):
+    """A ClinicalTrials.gov search. Each field is the API parameter of the same name with the
+    dot written as an underscore (query_cond is query.cond). The API skill documents the syntax.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    query_cond: str | None = Field(None, description="Conditions; expands disease synonyms.")
+    query_intr: str | None = Field(
+        None, description="Interventions: names, other names and descriptions."
+    )
+    query_term: str | None = Field(None, description="Anywhere in the record.")
+    query_spons: str | None = Field(None, description="Lead sponsor or collaborators.")
+    query_locn: str | None = Field(None, description="Facility, city, state or country.")
+    filter_advanced: str | None = Field(
+        None,
+        description="Essie expression: AREA[Field]value, AND / OR / NOT, RANGE[a,b], MISSING.",
+    )
+    filter_overall_status: list[Status] = Field(default_factory=list)
+
+    def params(self) -> dict[str, str]:
+        """The API query-string parameters."""
+        params = {
+            API_PARAMS[name]: value
+            for name, value in self.model_dump(exclude={"filter_overall_status"}).items()
+            if value
+        }
+        if self.filter_overall_status:
+            params["filter.overallStatus"] = ",".join(self.filter_overall_status)
+        return params
+
+    def is_empty(self) -> bool:
+        return not self.params()
+
+
 class Series(BaseModel):
     """One cohort in a comparison, e.g. the trials for one of two drugs."""
 
     model_config = ConfigDict(extra="forbid")
 
     label: str = Field(max_length=60, description="Legend label for this cohort.")
-    filters: Filters = Field(description="Added on top of the plan's shared filters.")
+    query: Query = Field(description="ANDed with the plan's shared query.")
 
 
 class AnalysisSpec(BaseModel):
@@ -166,9 +211,10 @@ class AnalysisSpec(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    filters: Filters = Field(
-        default_factory=Filters,
-        description="Shared by every series. Must include every filter from the request.",
+    query: Query = Field(
+        default_factory=Query,
+        description="Selects the trials, shared by every series. The request's filters are "
+        "added to it automatically.",
     )
     compare: list[Series] = Field(
         default_factory=list,
@@ -184,6 +230,15 @@ class AnalysisSpec(BaseModel):
     chart: ChartType = Field(
         description="Must fit the dimensions. "
         + " ".join(f"{chart.value}: {rule}." for chart, rule in CHART_RULES.items())
+    )
+    keep_values: dict[Dimension, list[str]] = Field(
+        default_factory=dict,
+        description="Plot only these values of a dimension (after names are normalized, e.g. "
+        "lowercase generic drug names). Use it to scope a chart to e.g. one drug class.",
+    )
+    drop_values: dict[Dimension, list[str]] = Field(
+        default_factory=dict,
+        description="Leave these values of a dimension out of the chart, e.g. ['pembrolizumab'].",
     )
     top_n: int | None = Field(
         None,
@@ -207,6 +262,9 @@ class AnalysisSpec(BaseModel):
         first, second = dims[0], dims[1] if len(dims) > 1 else None
         comparing = bool(self.compare)
 
+        for name in ("keep_values", "drop_values"):
+            if unused := set(getattr(self, name)) - set(dims):
+                raise ValueError(f"{name} names dimensions that are not plotted: {sorted(unused)}")
         if len(self.compare) == 1:
             raise ValueError("compare needs at least two series, or none")
         if comparing and chart not in (ChartType.GROUPED_BAR, ChartType.TIME_SERIES):

@@ -289,8 +289,7 @@ def _time_series(spec: AnalysisSpec, data: Dataset) -> Built:
         int(y) for (y, series), b in buckets.items() if series in kept_series and b.trial_count
     ]
     years = years or [this_year]
-    first = spec.filters.start_year or min(years)
-    last = spec.filters.end_year or max(years)
+    first, last = min(years), max(years)
 
     rows, plotted = [], set()
     for series in kept_series:

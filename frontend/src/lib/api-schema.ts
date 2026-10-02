@@ -53,8 +53,8 @@ export interface components {
          * @description The agent's plan for answering a question. Code executes it; the model supplies no data.
          */
         AnalysisSpec: {
-            /** @description Shared by every series. Must include every filter from the request. */
-            filters?: components["schemas"]["Filters"];
+            /** @description Selects the trials, shared by every series. The request's filters are added to it automatically. */
+            query?: components["schemas"]["Query"];
             /**
              * Compare
              * @description Two to four cohorts to compare side by side; empty for no comparison.
@@ -67,6 +67,20 @@ export interface components {
             dimensions: components["schemas"]["Dimension"][];
             /** @description Must fit the dimensions. bar: one categorical dimension. grouped_bar: one categorical dimension plus a comparison or a second categorical dimension. time_series: start_year first, optionally a categorical dimension or a comparison as the series. histogram: one quantitative dimension. scatter: two different quantitative dimensions, one point per trial. network: one entity dimension (co-occurrence within a trial, e.g. drug-drug) or two different entity dimensions (bipartite, e.g. sponsor-drug). */
             chart: components["schemas"]["ChartType"];
+            /**
+             * Keep Values
+             * @description Plot only these values of a dimension (after names are normalized, e.g. lowercase generic drug names). Use it to scope a chart to e.g. one drug class.
+             */
+            keep_values?: {
+                [key: string]: string[];
+            };
+            /**
+             * Drop Values
+             * @description Leave these values of a dimension out of the chart, e.g. ['pembrolizumab'].
+             */
+            drop_values?: {
+                [key: string]: string[];
+            };
             /**
              * Top N
              * @description Keep only the N largest categories, or the N best-connected network nodes.
@@ -214,52 +228,6 @@ export interface components {
             reason: string;
             /** Count */
             count: number;
-        };
-        /**
-         * Filters
-         * @description Which trials to include. Every field is optional; set fields are ANDed together.
-         */
-        Filters: {
-            /**
-             * Drug Name
-             * @description Drug or biologic listed as a trial intervention. Synonyms known to ClinicalTrials.gov match too (Keytruda and MK-3475 both match pembrolizumab).
-             */
-            drug_name?: string | null;
-            /**
-             * Condition
-             * @description Disease or condition studied.
-             */
-            condition?: string | null;
-            /**
-             * Sponsor
-             * @description Lead or collaborating sponsor.
-             */
-            sponsor?: string | null;
-            /**
-             * Country
-             * @description Country with at least one trial site.
-             */
-            country?: string | null;
-            /**
-             * Phases
-             * @description Keep trials in any of these.
-             */
-            phases?: components["schemas"]["Phase"][];
-            /**
-             * Statuses
-             * @description Keep trials whose overall status is any of these.
-             */
-            statuses?: components["schemas"]["Status"][];
-            /**
-             * Start Year
-             * @description Earliest trial start year, inclusive.
-             */
-            start_year?: number | null;
-            /**
-             * End Year
-             * @description Latest trial start year, inclusive.
-             */
-            end_year?: number | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -410,6 +378,45 @@ export interface components {
          */
         Phase: "NA" | "EARLY_PHASE1" | "PHASE1" | "PHASE2" | "PHASE3" | "PHASE4";
         /**
+         * Query
+         * @description A ClinicalTrials.gov search. Each field is the API parameter of the same name with the
+         *     dot written as an underscore (query_cond is query.cond). The API skill documents the syntax.
+         */
+        Query: {
+            /**
+             * Query Cond
+             * @description Conditions; expands disease synonyms.
+             */
+            query_cond?: string | null;
+            /**
+             * Query Intr
+             * @description Interventions: names, other names and descriptions.
+             */
+            query_intr?: string | null;
+            /**
+             * Query Term
+             * @description Anywhere in the record.
+             */
+            query_term?: string | null;
+            /**
+             * Query Spons
+             * @description Lead sponsor or collaborators.
+             */
+            query_spons?: string | null;
+            /**
+             * Query Locn
+             * @description Facility, city, state or country.
+             */
+            query_locn?: string | null;
+            /**
+             * Filter Advanced
+             * @description Essie expression: AREA[Field]value, AND / OR / NOT, RANGE[a,b], MISSING.
+             */
+            filter_advanced?: string | null;
+            /** Filter Overall Status */
+            filter_overall_status?: components["schemas"]["Status"][];
+        };
+        /**
          * Series
          * @description One cohort in a comparison, e.g. the trials for one of two drugs.
          */
@@ -419,8 +426,8 @@ export interface components {
              * @description Legend label for this cohort.
              */
             label: string;
-            /** @description Added on top of the plan's shared filters. */
-            filters: components["schemas"]["Filters"];
+            /** @description ANDed with the plan's shared query. */
+            query: components["schemas"]["Query"];
         };
         /**
          * SourceQuery

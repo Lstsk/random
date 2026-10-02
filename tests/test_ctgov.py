@@ -3,12 +3,12 @@ import json
 import httpx2
 import pytest
 
-from trialviz.ctgov import CTGovClient, CTGovError, filters_to_params
-from trialviz.schemas import Filters
+from trialviz.ctgov import CTGovClient, CTGovError, and_queries, request_query
+from trialviz.schemas import Filters, Query
 
 
-def test_filters_to_params():
-    params = filters_to_params(
+def test_request_filters_become_a_query():
+    query = request_query(
         Filters(
             drug_name="Pembrolizumab",
             condition="melanoma",
@@ -18,19 +18,37 @@ def test_filters_to_params():
             start_year=2015,
         )
     )
-    assert params == {
+    assert query.params() == {
+        "query.cond": "melanoma",
         "filter.advanced": '(AREA[InterventionName]"Pembrolizumab" OR '
         'AREA[InterventionOtherName]"Pembrolizumab") AND '
         'AREA[LocationCountry]"United States" AND AREA[Phase](PHASE2 OR PHASE3) AND '
         "AREA[StartDate]RANGE[2015-01-01,MAX]",
-        "query.cond": "melanoma",
         "filter.overallStatus": "RECRUITING",
     }
 
 
 def test_quotes_in_names_cannot_break_the_query():
-    params = filters_to_params(Filters(drug_name='x" OR AREA[Phase]PHASE1 "'))
-    assert params["filter.advanced"].count('"') == 4
+    query = request_query(Filters(drug_name='x" OR AREA[Phase]PHASE1 "'))
+    assert query.filter_advanced.count('"') == 4
+
+
+def test_and_queries_requires_every_part():
+    merged = and_queries(
+        Query(query_cond="melanoma", filter_overall_status=["RECRUITING", "COMPLETED"]),
+        Query(query_cond="stage IV", filter_advanced="AREA[Phase]PHASE3"),
+        Query(filter_overall_status=["RECRUITING"]),
+    )
+    assert merged.query_cond == "(melanoma) AND (stage IV)"
+    assert merged.filter_advanced == "AREA[Phase]PHASE3"
+    assert merged.filter_overall_status == ["RECRUITING"]
+
+
+def test_and_queries_rejects_statuses_that_exclude_each_other():
+    with pytest.raises(ValueError, match="exclude each other"):
+        and_queries(
+            Query(filter_overall_status=["RECRUITING"]), Query(filter_overall_status=["COMPLETED"])
+        )
 
 
 def client_with(handler, cache_dir=None) -> tuple[CTGovClient, list[float]]:
@@ -49,7 +67,7 @@ def test_search_follows_pages_and_stops_at_the_cap():
         return httpx2.Response(200, json=body)
 
     client, _ = client_with(handler)
-    result = client.search(Filters(condition="x"), ["Phase"], max_records=5)
+    result = client.search(Query(query_cond="x"), ["Phase"], max_records=5)
     assert len(result.studies) == 5
     assert result.total == 7
     assert result.truncated
@@ -60,21 +78,21 @@ def test_retries_rate_limits_with_backoff():
         [httpx2.Response(429), httpx2.Response(503), httpx2.Response(200, json={"totalCount": 3})]
     )
     client, sleeps = client_with(lambda request: next(responses))
-    assert client.count(Filters(condition="x")) == 3
+    assert client.count(Query(query_cond="x")) == 3
     assert sleeps == [2, 4]
 
 
 def test_gives_up_after_the_last_backoff():
     client, sleeps = client_with(lambda request: httpx2.Response(429))
     with pytest.raises(CTGovError, match="unavailable after retries"):
-        client.count(Filters(condition="x"))
+        client.count(Query(query_cond="x"))
     assert sleeps == [2, 4, 8]
 
 
 def test_client_errors_are_not_retried():
     client, sleeps = client_with(lambda request: httpx2.Response(400, text="bad query"))
     with pytest.raises(CTGovError, match="HTTP 400"):
-        client.count(Filters(condition="x"))
+        client.count(Query(query_cond="x"))
     assert sleeps == []
 
 
@@ -86,8 +104,8 @@ def test_repeated_requests_are_served_from_cache(tmp_path):
         return httpx2.Response(200, json={"totalCount": 3})
 
     client, _ = client_with(handler, cache_dir=tmp_path)
-    client.count(Filters(condition="x"))
-    client.count(Filters(condition="x"))
+    client.count(Query(query_cond="x"))
+    client.count(Query(query_cond="x"))
     assert len(calls) == 1
     [cached] = tmp_path.iterdir()
     assert json.loads(cached.read_text()) == {"totalCount": 3}

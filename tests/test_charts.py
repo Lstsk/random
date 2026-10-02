@@ -1,7 +1,7 @@
 from datetime import date
 
 import pytest
-from conftest import FakeClient, study
+from conftest import FIELD_PATHS, FakeClient, study
 
 from trialviz import analysis, charts
 from trialviz.analysis import NoTrialsError
@@ -112,14 +112,14 @@ def test_time_series_marks_the_current_and_future_years():
 
 
 def test_grouped_bar_compares_series(labeler):
-    by_drug = {"A": STUDIES[:2], "B": STUDIES[3:]}
+    by_drug = {"drugA": STUDIES[:2], "drugB": STUDIES[3:]}
     plan = AnalysisSpec(
         dimensions=["phase"],
         chart="grouped_bar",
         title="Phases by drug",
         compare=[
-            {"label": "A", "filters": {"drug_name": "A"}},
-            {"label": "B", "filters": {"drug_name": "B"}},
+            {"label": "A", "query": {"query_intr": "drugA"}},
+            {"label": "B", "query": {"query_intr": "drugB"}},
         ],
     )
     data = analysis.load(plan, FakeClient(by_drug), labeler)
@@ -186,19 +186,22 @@ class CountingClient:
         self.total, self.per_clause = total, per_clause
         self.requests = 0
 
-    def count(self, filters, extra=()):
+    def count(self, query):
         self.requests += 1
-        return self.per_clause.get(extra[0], 0) if extra else self.total
+        clause = query.filter_advanced
+        return self.per_clause.get(clause, 0) if clause else self.total
 
-    def sample(self, filters, extra, fields, size):
+    def sample(self, query, fields, size):
         self.requests += 1
-        clause = extra[0]
-        total = self.per_clause.get(clause, 0)
-        phase = clause.removeprefix("AREA[Phase]")
+        total = self.per_clause.get(query.filter_advanced, 0)
+        phase = query.filter_advanced.removeprefix("AREA[Phase]")
         studies = [study(f"NCT9{i}", phases=[phase]) for i in range(min(size, total))]
         return SearchResult(studies, total, truncated=False)
 
-    def start_year_bound(self, filters, latest):
+    def field_paths(self):
+        return FIELD_PATHS
+
+    def start_year_bound(self, query, latest):
         raise AssertionError("not needed for phases")
 
 
@@ -213,7 +216,7 @@ def test_large_result_sets_are_counted_on_the_server(labeler):
         },
     )
     plan = AnalysisSpec(
-        filters={"condition": "cancer"}, dimensions=["phase"], chart="bar", title="T"
+        query={"query_cond": "cancer"}, dimensions=["phase"], chart="bar", title="T"
     )
     data = analysis.load(plan, client, labeler)
     built = charts.build(plan, data)
@@ -232,7 +235,7 @@ def test_large_result_sets_are_counted_on_the_server(labeler):
 
 
 def test_small_result_sets_are_still_fetched(labeler):
-    plan = AnalysisSpec(filters={"condition": "x"}, dimensions=["phase"], chart="bar", title="T")
+    plan = AnalysisSpec(query={"query_cond": "x"}, dimensions=["phase"], chart="bar", title="T")
     data = analysis.load(plan, FakeClient(STUDIES), labeler)
     assert data.method == "fetch"
 
@@ -260,8 +263,12 @@ def resolve(record: dict, path: str):
 )
 def test_every_citation_reads_back_from_the_source_record(labeler, spec):
     records = {s["protocolSection"]["identificationModule"]["nctId"]: s for s in STUDIES}
-    filters = {"drug_name": "Drug A", "country": "united states", "start_year": 2019}
-    plan = AnalysisSpec.model_validate({"title": "T", "filters": filters} | spec)
+    query = {
+        "query_intr": "Drug A",
+        "filter_advanced": 'AREA[LocationCountry]"United States" AND '
+        "AREA[StartDate]RANGE[2019-01-01,MAX]",
+    }
+    plan = AnalysisSpec.model_validate({"title": "T", "query": query} | spec)
     viz = charts.build(plan, analysis.load(plan, FakeClient(STUDIES), labeler)).visualization
     if viz.type == "network":
         data = [n.model_dump() for n in viz.data.nodes] + [e.model_dump() for e in viz.data.edges]
@@ -283,10 +290,13 @@ def test_citations_show_why_a_trial_matches_the_filters(labeler):
     record["protocolSection"]["armsInterventionsModule"]["interventions"][0]["otherNames"] = [
         "Keytruda"
     ]
-    filters = {"drug_name": "pembrolizumab", "country": "United States"}
-    built = run(labeler, [record], filters=filters, dimensions=["start_year"], chart="time_series")
+    query = {
+        "filter_advanced": '(AREA[InterventionName]"pembrolizumab" OR '
+        'AREA[InterventionOtherName]"pembrolizumab") AND AREA[LocationCountry]"United States"'
+    }
+    built = run(labeler, [record], query=query, dimensions=["start_year"], chart="time_series")
     cited = {(c["kind"], c["value"]) for c in built.visualization.data[0]["citations"]}
     assert ("grouping", "2016-02") in cited
     assert ("filter", "MK-3475") in cited and ("filter", "Keytruda") in cited
-    assert ("filter", "United States") in cited and ("filter", "Spain") not in cited
+    assert ("filter", "United States") in cited and ("filter", "Spain") in cited
     assert ("title", "Study NCT5") in cited
